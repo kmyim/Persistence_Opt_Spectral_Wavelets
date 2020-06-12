@@ -6,6 +6,7 @@ Graphs are filtered by the spectral wavelets of the normalised graph Laplacian.
 
 The mathematical details can be explained in this [this talk](https://youtu.be/jUCNSu8xkSs) 
 
+You can run the jupyter notebook demonstration to see how the ChebyshevWavelets module interface with PyTorch.
 
 ## Dependencies
 
