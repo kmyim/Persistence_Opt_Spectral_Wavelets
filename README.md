@@ -4,9 +4,12 @@ This repo contains PyTorch compatible functions to compute lower star filtration
 
 Graphs are filtered by their spectral wavelets. 
 
-## Prerequisites
+## Dependencies
 
-- Gudhi
-- PyTorch
+- Gudhi 3.0.0
+- PyTorch 1.4.0
+- Numpy 1.18.1
+- Scipy 1.4.1
+- Networkx 2.1
 
 
