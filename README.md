@@ -2,7 +2,10 @@
 
 This repo contains PyTorch compatible functions to compute lower star filtrations of graphs that can be optimised by minimising an objective function.
 
-Graphs are filtered by their spectral wavelets. 
+Graphs are filtered by the spectral wavelets of the normalised graph Laplacian. 
+
+The mathematical details can be explained in this [this talk](https://youtu.be/jUCNSu8xkSs) 
+
 
 ## Dependencies
 
