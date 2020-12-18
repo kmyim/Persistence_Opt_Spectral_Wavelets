@@ -1,11 +1,10 @@
 import networkx as nx
-
+import gc
 import torch
 import torch.optim as optim
 import torch.nn as nn
 import torch.nn.functional as F
 
-from scipy.stats import rankdata
 import numpy as np
 import pickle
 from scipy.linalg import eigh
@@ -14,11 +13,11 @@ from models import ModelPIRBF, EMA
 import matplotlib.pyplot as plt
 
 ##### neural net parameters #####
-
+gc.collect()
 # persistence image
 resolution = 20 # res x res image
 error_tol = 0 #only recompute persistence when change in filter function > error_tol
-expt_name = 'rbf12diag_picnn_noopt'
+expt_name = 'rbf12diag_picnn_full12'
 rbf = 12
 lr = 1e-2
 ema_decay = 0.9
@@ -28,7 +27,7 @@ centroids = torch.linspace(-rbfeps, 2 + rbfeps, rbf)
 
 
 ##### directories #####
-dataset_name = 'COX2/'
+dataset_name = 'NCI1/'
 raw = 'raw_datasets/'
 processed = 'processed_datasets/'
 result_dump = 'ten10folds/' + dataset_name + expt_name + '/' + expt_name + '_'
@@ -41,9 +40,9 @@ data_len = len(graph_list)
 
 ##### training parameters #####
 max_epoch =200
-wavelet_opt = 0
+wavelet_opt = 20
 epoch_samples = [0, 24, 49, 75, 99, 124, 149, 174, 199]
-bs = {'DHFR/': 11, 'MUTAG/': 17, 'COX2/': 9, 'IMDB-BINARY/': 90, 'NCI1/': 137}
+bs = {'DHFR/': 11, 'MUTAG/': 10, 'COX2/': 9, 'IMDB-BINARY/': 90, 'NCI1/': 20, 'PROTEINS/': 17}
 batch_size = bs[dataset_name]
 test_size =  data_len // 10
 train_batches = np.ceil((data_len-test_size)/batch_size).astype(int)
@@ -79,11 +78,12 @@ for i in range(len(graph_list)):
 #plt.show()
 u, s, vh  = np.linalg.svd(Alist, full_matrices = False)
 del Alist
-
+gc.collect()
 print(s)
 
-principal_dims = abs(s) >10
-indices =np.where(principal_dims)[0]
+#principal_dims = abs(s) >2
+#indices =np.where(principal_dims)[0]
+indices = list(range(rbf))
 print(indices)
 pds = len(indices)
 print(pds)
@@ -93,6 +93,7 @@ print(pds)
 #winit = torch.tensor(s[principal_dims])4
 #winit = winit / torch.max(winit)
 print(s, indices)
+
 winit = np.matmul(u[:,indices].T, hkslist)
 reconstruct_delta = np.abs(np.matmul(u[:, indices], winit)- hkslist)
 error_max = np.argmax(reconstruct_delta)
@@ -105,7 +106,7 @@ torch.manual_seed(0)
 #eval_model = ModelPIRBF(rbf = pds, resolution = resolution, weightinit = winit)
 #eval_model = ModelPIRBF(rbf = pds, resolution = resolution)
 #coeffs = eval_model.rbfweights.detach().clone().float()
-print(coeffs)
+#print(coeffs)
 
 
 mx, mn = -np.inf, np.inf
@@ -116,7 +117,7 @@ for i in range(len(graph_list)):
     G = graph_list[i]
     dat['secondary_gram'] = torch.from_numpy(u[cnter:cnter + len(G),indices])
     cnter+= len(G)
-    hks = torch.flatten(torch.matmul(dat['secondary_gram'], coeffs)).float().detach()
+    hks = torch.flatten(torch.matmul(dat['secondary_gram'], winit)).float().detach()
     mx = max(float(torch.max(hks)), mx)
     mn = min(float(torch.min(hks)), mn)
 
@@ -128,17 +129,29 @@ for i in range(len(graph_list)):
     del pers
 
 del u, s, vh
-
+gc.collect()
+#if fix wavelet
+eval_model = ModelPIRBF(rbf = pds, resolution = resolution, lims = [mn, mx], weightinit = winit)
+eval_model.update = True
+outcrap = eval_model(data)
+plt.imshow(data[83]['images'][0,0])
+plt.show()
+plt.imshow(data[83]['images'][0,1])
+plt.show()
+plt.imshow(data[83]['images'][0,2])
+plt.show()
 
 label = torch.tensor(label).float()
 print('Finished initial processing')
 del graph_list
+gc.collect()
 print(mn,  mx)
 torch.set_rng_state(rng_state) #fix init state
 shuffidx = list(range(data_len)) # data indexer
 criterion = nn.BCEWithLogitsLoss() #loss function
 
-for run in range(10):
+
+for run in range(1,10):
     print('run = ', run)
     np.random.seed(run)
     np.random.shuffle(shuffidx) # randomly choose partition of data into test / fold
@@ -162,12 +175,24 @@ for run in range(10):
         torch.manual_seed(0)
         pht = ModelPIRBF(rbf = pds, resolution = resolution, lims = [mn, mx], weightinit = winit)
         #pht = ModelPIRBF(rbf = pds, resolution = resolution, lims = [mn, mx])
-        if run==0 and fold == 0: print(pht.rbfweights)
+        #if run==0 and fold == 0: print(pht.rbfweights)
+
 
         torch.set_rng_state(rng_state)
         torch.manual_seed(0)
         eval_model = ModelPIRBF(rbf = pds, resolution = resolution, lims = [mn, mx], weightinit = winit)
-        if run==0 and fold == 0: print(eval_model.rbfweights)
+        eval_model.freeze_persistence = True
+        #if run==0 and fold == 0: print(eval_model.rbfweights)
+
+        ##### If fix wavelet #######
+        if wavelet_opt <= 0:
+            pht.freeze_persistence = True
+            for name, param in pht.named_parameters():
+                if 'CNN' in name:
+                    param.requires_grad = True
+                if 'rbfweights' in name:
+                    param.requires_grad = False
+
 
         ema = EMA(ema_decay)
         ema.register(pht.state_dict(keep_vars = False))
@@ -187,10 +212,10 @@ for run in range(10):
 
             if epoch == wavelet_opt:
                 eval_model.update = True
-                outputs = eval_model(data) # update all frozen vectors to latest parameters
+                #outputs = eval_model(data) # update all frozen vectors to latest parameters
                 eval_model.freeze_persistence = True
-                #pht.update = True
-                #outputs = pht(data)
+                pht.update = True
+                outputs = pht(data)
                 pht.freeze_persistence = True
 
                 for name, param in pht.named_parameters():
@@ -198,17 +223,19 @@ for run in range(10):
                         param.requires_grad = True
                     if 'rbfweights' in name:
                         param.requires_grad = False
-                #fig, ((ax1, ax2, ax7), (ax3, ax4, ax8) , (ax5, ax6, ax9))  = plt.subplots(3,3)
-                #ax1.imshow(data[-47]['images'][0,0])
-                #ax2.imshow(placeholder[0])
-                #ax3.imshow(data[-47]['images'][0,1])
-                #ax4.imshow(placeholder[1])
-                #ax5.imshow(data[-47]['images'][0,2])
-                #ax6.imshow(placeholder[2])
-                #ax7.imshow(placeholder[0] - data[0]['images'][0,0])
-                #ax8.imshow(placeholder[1] - data[0]['images'][0,1])
-                #ax9.imshow(placeholder[2] - data[0]['images'][0,2])
-                plt.show()
+                #if run == 0 and epoch == 0:
+                #    fig, ((ax1, ax2, ax7), (ax3, ax4, ax8) , (ax5, ax6, ax9))  = plt.subplots(3,3)
+                #    ax1.imshow(data[-47]['images'][0,0])
+                #    #ax2.imshow(placeholder[0])
+                #    ax3.imshow(data[-47]['images'][0,1])
+                #    #ax4.imshow(placeholder[1])
+                #    ax5.imshow(data[-47]['images'][0,2])
+                    #ax6.imshow(placeholder[2])
+                    #ax7.imshow(placeholder[0] - data[0]['images'][0,0])
+                    #ax8.imshow(placeholder[1] - data[0]['images'][0,1])
+                    #ax9.imshow(placeholder[2] - data[0]['images'][0,2])
+                #    plt.show()
+                    #crap
             tna = 0
             lss = 0
 
@@ -251,7 +278,6 @@ for run in range(10):
 
                 eval_model.load_state_dict(ema.shadow)
                 eval_model.eval()
-
                 pht.eval()
                 #test_outputs = pht([data[i] for i in test_indices])
                 test_outputs = eval_model([data[i] for i in test_indices])
@@ -268,3 +294,4 @@ for run in range(10):
 
 
         del rbf_params, train_acc, test_acc, loss_func, eval_model, pht
+        gc.collect()

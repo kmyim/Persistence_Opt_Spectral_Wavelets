@@ -17,15 +17,16 @@ import gc
 ##### neural net parameters #####
 
 error_tol = 0 #only recompute persistence when change in filter function > error_tol
-expt_name = 'rbf12_3_stats'
+expt_name = 'hks_stats_control'
 rbf = 12
-pds= 3
+pds= 12
 relabel_p = 0.
 smooth_squeeze = 0.
+wavelet_opt = -1
 
 
 ##### directories #####
-dataset_name = 'DHFR'
+dataset_name = 'NCI1'
 raw = 'raw_datasets/'
 processed = 'processed_datasets/'
 result_dump = 'ten10folds/' + dataset_name + '/' + expt_name + '/' + expt_name + '_'
@@ -57,16 +58,16 @@ centroids = torch.linspace(-rbfeps, 2 + rbfeps, rbf)
 
 
 ##### training parameters #####
-max_epoch = 200
+max_epoch = 400
 #start_sample = 99 #start evaluating on the test set at this epoch
 #sampling_freq = 100 #evaluate on test set every sampling_freq number of epochs after you start sampling
 start_sample = 0 #start evaluating on the test set at this epoch
 sampling_freq = 1 #evaluate on test set every sampling_freq number of epochs after you start sampling
 epoch_samples = [0, 24, 49, 74, 99, 124, 149, 174, 199]
 test_size =  data_len // 10
-bs = {'DHFR': 31, 'MUTAG': 17, 'COX2': 36, 'IMDB-BINARY': 90, 'NCI1': 137}
-batch_size = bs[dataset_name]
-
+#bs = {'DHFR': 31, 'MUTAG': 17, 'COX2': 36, 'IMDB-BINARY': 90, 'NCI1': 137}
+#batch_size = bs[dataset_name]
+batch_size = 20 #NCI
 train_batches = np.ceil((data_len-test_size)/batch_size).astype(int)
 print('number of batches = ', train_batches, ' batch size = ', batch_size, ' test size ', test_size)
 
@@ -126,7 +127,7 @@ print(s)
 #principals = np.matmul(vh[principal_dims].T, sigma_inverse)
 #pickle.dump(principals, open(result_dump + 'principal_subspace.pkl', 'wb'))
 #principals = torch.from_numpy(principals).float()
-indices = [0,1,2]
+indices = list(range(pds))
 print(s, indices)
 
 winit = np.matmul(u[:,indices].T, hkslist)
@@ -204,6 +205,7 @@ for run in range(10):
 
         torch.set_rng_state(rng_state) #fix init state
         pht = ModelStatsRBF(pds, mn = mn, mx=  mx, weightinit = winit)#### Mode
+        if wavelet_opt <= 0: pht.freeze_persistence = True
         criterion = nn.BCEWithLogitsLoss() #loss function
 
         #coeffs = pht.rbfweights.detach().data
@@ -214,7 +216,7 @@ for run in range(10):
             pht.train()
             np.random.shuffle(train_indices)
 
-            if epoch == 200:
+            if epoch == wavelet_opt:
                 pht.update = True
                 outputs = pht(data) # update all frozen vectors to latest parameters
                 pht.freeze_persistence = True
@@ -246,7 +248,7 @@ for run in range(10):
                 #nn.utils.clip_grad_norm_(pht.rbfweights, 0.5)
                 #optimizer_classifier.step()
                 #optimizer_filter.step()
-                if epoch < 200:
+                if epoch < wavelet_opt:
                     optimizer_classifier.step()
                     optimizer_filter.step()
                 else:
@@ -260,7 +262,7 @@ for run in range(10):
                 #dtheta.append(float(pht.rbfweights.grad.data.norm(2)))
                 #theta.append(pht.rbfweights.detach().clone().numpy())
 
-            if epoch < 200:
+            if epoch < wavelet_opt:
                 rbf_params.append(pht.rbfweights.detach().clone().numpy())
             train_acc.append(tna/len(train_indices))
             loss_func.append(lss/len(train_indices))
