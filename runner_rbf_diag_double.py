@@ -18,7 +18,7 @@ gc.collect()
 # persistence image
 resolution = 20 # res x res image
 error_tol = 0 #only recompute persistence when change in filter function > error_tol
-expt_name = 'rbf12_diag_double_picnn'
+expt_name = 'rbf12_diag_double_picnn_finalbn'
 rbf = 12
 lr = 1e-2
 ema_decay = 0.9
@@ -28,7 +28,7 @@ centroids = torch.linspace(-rbfeps, 2 + rbfeps, rbf)
 
 
 ##### directories #####
-dataset_name = 'COX2/'
+dataset_name = 'MUTAG/'
 raw = 'raw_datasets/'
 processed = 'data_example/'
 result_dump = 'ten10folds/' + dataset_name + expt_name + '/' + expt_name + '_'
@@ -156,7 +156,7 @@ shuffidx = list(range(data_len)) # data indexer
 criterion = nn.BCEWithLogitsLoss() #loss function
 
 
-for run in range(2,10):
+for run in range(10):
     print('run = ', run)
     np.random.seed(run)
     np.random.shuffle(shuffidx) # randomly choose partition of data into test / fold
