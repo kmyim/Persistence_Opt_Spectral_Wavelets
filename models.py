@@ -1879,3 +1879,146 @@ class ModelFixedDgms(nn.Module):
         x = self.final_final_fc(x)
 
         return x
+
+
+class ModelPIRBFDoubleOneStatic(nn.Module):
+
+    def __init__(self, rbf = 10, resolution = 10, lims = [0.0, 1.0], weightinit = None):
+
+        super(ModelPIRBFDoubleOneStatic, self).__init__()
+
+        if type(weightinit) == type(None):
+            self.rbfweights = nn.Parameter(torch.empty(rbf, 1).normal_(mean = 0, std = 1/np.sqrt(rbf)), requires_grad = True)
+        else:
+            self.rbfweights = nn.Parameter(torch.reshape(weightinit, [rbf, 1]), requires_grad = True)
+        self.resolution = resolution
+        self.max_num_intervals = [100, 100, 100]
+        self.lims = lims
+        self.sigma = 1/(resolution-3)
+        self.resolution = resolution
+        self.PHPI = GenPHandPI(self.resolution, self.lims)
+
+        #self.CNN= nn.Sequential(nn.BatchNorm2d(3), nn.Conv2d(in_channels = 3,out_channels = 15, kernel_size = 2, stride = 1), nn.ReLU(), nn.BatchNorm2d(15), nn.Conv2d(in_channels = 15,out_channels = 1, kernel_size = 2, stride = 1), nn.ReLU(), nn.Dropout2d(0.6))
+        self.CNN= nn.Sequential(nn.BatchNorm2d(6), nn.Conv2d(in_channels = 6,out_channels = 16, kernel_size = 2, stride = 1, groups = 2), nn.ReLU(), nn.BatchNorm2d(16), nn.Conv2d(in_channels = 16,out_channels = 2, kernel_size = 2, stride = 1), nn.ReLU())
+
+        butt = 2*(self.resolution -2)**2
+
+        self.project = nn.Sequential(nn.Dropout(0.5), nn.Linear(butt, 1))
+        self.mn = min(lims)
+        self.mx = max(lims)
+        self.range = abs(self.mx - self.mn)
+
+        self.freeze_persistence = False
+        self.update = False
+
+    def forward(self, mb):
+
+        L = len(mb)
+        PIs = torch.zeros([L, 6, self.resolution, self.resolution])
+
+        for i in range(L):
+            if self.freeze_persistence :
+                PIs[i] = mb[i]['images']
+            else:
+                PIs[i][3:] = mb[i]['images'][3:]
+
+        if self.freeze_persistence == False:
+
+            births = torch.zeros([L, 3, max(self.max_num_intervals)])
+            deaths = torch.zeros([L, 3, max(self.max_num_intervals)])
+
+            for i in range(L):
+                datum = mb[i]
+                f = (torch.matmul(datum['secondary_gram'], self.rbfweights).flatten() - self.mn)/(self.range)
+                mb[i]['f'] = f
+
+            PI_dynamic = self.PHPI(mb)
+            PIs[:,0:3,:,:] = PI_dynamic
+
+            if self.update :
+                for i in range(L):
+                    mb[i]['images'][0:3] = PI_dynamic[i].detach().clone().unsqueeze(0)
+            del births, deaths
+
+        PIs = self.CNN(PIs)
+        features = torch.reshape(PIs, [L, -1])
+
+        return self.project(features)
+
+
+
+class GenPHandPI(nn.Module):
+
+    def __init__(self, resolution = 10, lims = [0.0, 1.0], filtername = 'f'):
+
+        super(GenPHandPI, self).__init__()
+
+        self.resolution = resolution
+        self.max_num_intervals = [100, 100, 100]
+        self.mn = min(lims)
+        self.mx = max(lims)
+        self.range = abs(self.mx - self.mn)
+
+        self.sigma = 1/(resolution-3)
+        self.resolution = resolution
+        self.PI = PersistenceImage(self.resolution, self.sigma)
+        self.filtername = filtername
+
+
+
+    def forward(self, mb):
+        L = len(mb)
+        births = torch.zeros([L, 3, max(self.max_num_intervals)])
+        deaths = torch.zeros([L, 3, max(self.max_num_intervals)])
+
+        for i in range(L):
+            datum = mb[i]
+            f = (datum[self.filtername]- self.mn)/(self.range)
+
+            birthv = [[],[],[]]
+            deathv = [[],[],[]]
+            #recompute persistence
+            datum['simplex_tree'] = filtration_update(datum['simplex_tree'], f.detach().numpy())
+            pers = datum['simplex_tree'].persistence(homology_coeff_field = 2)
+
+            pairs =  datum['simplex_tree'].persistence_pairs()
+            for interval in pairs:
+                if len(interval[1]) == 0: #skip infinite bars
+                    continue
+                else:
+                    if len(interval[0]) == 1: #H0
+                        bv = interval[0][0]
+                        dv = max([v for v in interval[1] if v != 1000], key = lambda v: f[v])
+                        k = 0
+                    if len(interval[0]) == 2: #H1
+                        dv = max([v for v in interval[0] if v != 1000], key = lambda v: f[v])
+                        bv = min([v for v in interval[1] if v != 1000], key = lambda v: f[v])
+                        if 1000 in interval[0]:
+                            k = 1
+                        else:
+                            k = 2
+                birthv[k].append(bv)
+                deathv[k].append(dv)
+
+            for k in range(3):
+                if len(birthv[k]) > 0:
+                    b = f[birthv[k]]
+                    d = f[deathv[k]]
+
+                    if len(b) > self.max_num_intervals[k]:
+                        p = torch.abs(f[birthv[k]] - f[deathv[k]])
+                        truncation = torch.topk(p, self.max_num_intervals[k], largest=True, sorted=False).indices
+                        b = b[truncation]
+                        d = d[truncation]
+                    births[i, k,0:len(b)] = b
+                    deaths[i, k,0:len(d)] = d
+                    del b, d
+            del birthv, deathv
+
+        births = torch.reshape(births, [L*3, -1])
+        deaths = torch.reshape(deaths, [L*3, -1])
+        PIs = self.PI(births, deaths)
+        PIs = torch.reshape(PIs, [L, 3, self.resolution, self.resolution])
+        del births, deaths
+
+        return PIs
