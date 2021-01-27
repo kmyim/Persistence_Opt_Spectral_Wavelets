@@ -328,8 +328,8 @@ class ModelPIRBFDoubleOneStatic(nn.Module):
 
         self.extra_feat_len = extra_feat_len
         butt = 2*(self.resolution -2)**2 + extra_feat_len
-
-        self.feats_preprocess = nn.Sequential(nn.BatchNorm1d(extra_feat_len, affine = False), nn.Linear(extra_feat_len, extra_feat_len), nn.ReLU(), nn.BatchNorm1d(extra_feat_len))
+        if extra_feat_len > 0:
+            self.feats_preprocess = nn.Sequential(nn.BatchNorm1d(extra_feat_len, affine = False), nn.Linear(extra_feat_len, extra_feat_len), nn.ReLU(), nn.BatchNorm1d(extra_feat_len))
 
         self.project = nn.Sequential(nn.Dropout(0.5), nn.Linear(butt, 1))
         self.mn = min(lims)

@@ -23,6 +23,7 @@ expt_name = 'rbf12_diag_double_picnn_eigsig'
 rbf = 12
 lr = 1e-2
 ema_decay = 0.9
+xtra_feat = True #if  true, add extra features to model
 
 rbfeps = 2/(rbf-3)
 centroids = torch.linspace(-rbfeps, 2 + rbfeps, rbf)
@@ -54,10 +55,15 @@ torch.manual_seed(0)
 rng_state= torch.get_rng_state() #seed init to ensure same initial conditions for each training
 
 ### eigenvalue path signature ####
-pslevel = 4
-sig_prep = iisignature.prepare(2, pslevel)
-sig_length = iisignature.logsiglength(2, pslevel)
-print(sig_length)
+if xtra_feat:
+    pslevel = 4
+    sig_prep = iisignature.prepare(2, pslevel)
+    xtra_feat_length = iisignature.logsiglength(2, pslevel)
+else:
+    xtra_feat_length = 0
+
+print(xtra_feat_length)
+
 
 
 ###### preprocess #####
@@ -74,10 +80,11 @@ for i in range(len(graph_list)):
     datum = dict()
     label.append(G.graph['label'])
 
-    path =  np.zeros([len(lam)-1, 2]) #taken's embedding of eigenvalues
-    path[:,0] = lam[1:]
-    path[:,1] = lam[:-1]
-    datum['feats'] = torch.tensor(iisignature.logsig(path,sig_prep)).float()
+    if xtra_feat:
+        path =  np.zeros([len(lam)-1, 2]) #taken's embedding of eigenvalues
+        path[:,0] = lam[1:]
+        path[:,1] = lam[:-1]
+        datum['feats'] = torch.tensor(iisignature.logsig(path,sig_prep)).float()
 
 
     evecssq = torch.from_numpy(v**2).float()
@@ -157,7 +164,7 @@ gc.collect()
 
 
 #if fix wavelet
-eval_model = ModelPIRBFDoubleOneStatic(rbf = rbf, resolution = resolution, lims = [mn, mx], weightinit = winit, extra_feat_len = sig_length)
+eval_model = ModelPIRBFDoubleOneStatic(rbf = rbf, resolution = resolution, lims = [mn, mx], weightinit = winit, extra_feat_len = xtra_feat_length)
 eval_model.update = True #write PIs to dat['images']
 outcrap = eval_model(data)
 
@@ -193,14 +200,14 @@ for run in range(10):
 
         torch.set_rng_state(rng_state) #fix init state
         torch.manual_seed(0)
-        pht = ModelPIRBFDoubleOneStatic(rbf = rbf, resolution = resolution, lims = [mn, mx], weightinit = winit, extra_feat_len = sig_length)
+        pht = ModelPIRBFDoubleOneStatic(rbf = rbf, resolution = resolution, lims = [mn, mx], weightinit = winit, extra_feat_len = xtra_feat_length)
         #pht = ModelPIRBFDoubleOneStatic(rbf = rbf, resolution = resolution, lims = [mn, mx])
         #if run==0 and fold == 0: print(pht.rbfweights)
 
 
         torch.set_rng_state(rng_state)
         torch.manual_seed(0)
-        eval_model = ModelPIRBFDoubleOneStatic(rbf = rbf, resolution = resolution, lims = [mn, mx], weightinit = winit, extra_feat_len = sig_length)
+        eval_model = ModelPIRBFDoubleOneStatic(rbf = rbf, resolution = resolution, lims = [mn, mx], weightinit = winit, extra_feat_len = xtra_feat_length)
         eval_model.freeze_persistence = True
         #if run==0 and fold == 0: print(eval_model.rbfweights)
 
