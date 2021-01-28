@@ -16,21 +16,22 @@ import iisignature
 
 ##### neural net parameters #####
 gc.collect()
+#torch.set_num_threads(4)
 # persistence image
 resolution = 20 # res x res image
 error_tol = 0 #only recompute persistence when change in filter function > error_tol
-expt_name = 'rbf12_diag_double_picnn_eigsig_bugfix'
+expt_name = 'rbf12_diag_double_picnn_eigsig_bugfix_static'
 rbf = 12
 lr = 1e-2
 ema_decay = 0.9
-xtra_feat = True #if  true, add extra features to model
+xtra_feat = True  #if  true, add extra features to model
 
 rbfeps = 2/(rbf-3)
 centroids = torch.linspace(-rbfeps, 2 + rbfeps, rbf)
 
 
 ##### directories #####
-dataset_name = 'COX2/'
+dataset_name = 'IMDB-BINARY/'
 raw = 'raw_datasets/'
 processed = 'data_example/'
 result_dump = 'ten10folds/' + dataset_name + expt_name + '/' + expt_name + '_'
@@ -42,9 +43,9 @@ graph_list = pickle.load(open(processed + dataset_name + 'networkx_graphs.pkl', 
 data_len = len(graph_list)
 
 ##### training parameters #####
-max_epoch =200
-wavelet_opt = 50
-epoch_samples = [0, 24, 49, 75, 99, 124, 149, 174, 199]
+max_epoch = 200
+wavelet_opt = 0
+epoch_samples = [k for k in [0, 24, 49, 75, 99, 124, 149, 174, 199] if k < max_epoch]
 bs = {'DHFR/': 11, 'MUTAG/': 10, 'COX2/': 9, 'IMDB-BINARY/': 18, 'NCI1/': 20, 'IMDB-MULTI/': 27 }
 batch_size = bs[dataset_name]
 test_size =  data_len // 10
@@ -125,8 +126,6 @@ for i in range(len(graph_list)):
     dat = data[i]
     dat['images'][3:, :,:] = PIs_static[i]
 
-#plt.hist(hks)
-#plt.show()
 u, s, vh  = np.linalg.svd(Alist, full_matrices = False)
 del Alist
 gc.collect()
@@ -164,13 +163,13 @@ gc.collect()
 
 
 #if fix wavelet
-eval_model = ModelPIRBFDoubleOneStatic(rbf = rbf, resolution = resolution, lims = [mn, mx], weightinit = winit, extra_feat_len = xtra_feat_length)
-eval_model.update = True #write PIs to dat['images']
-outcrap = eval_model(data)
+#eval_model = ModelPIRBFDoubleOneStatic(rbf = rbf, resolution = resolution, lims = [mn, mx], weightinit = winit, extra_feat_len = xtra_feat_length)
+#eval_model.update = True #write PIs to dat['images']
+#outcrap = eval_model(data)
 
 label = torch.tensor(label).float()
 print('Finished initial processing')
-del graph_list, outcrap
+del graph_list
 gc.collect()
 print(mn,  mx)
 torch.set_rng_state(rng_state) #fix init state
@@ -178,7 +177,7 @@ shuffidx = list(range(data_len)) # data indexer
 criterion = nn.BCEWithLogitsLoss() #loss function
 
 
-for run in range(1, 10):
+for run in range(10):
     print('run = ', run)
     np.random.seed(run)
     np.random.shuffle(shuffidx) # randomly choose partition of data into test / fold
@@ -208,17 +207,20 @@ for run in range(1, 10):
         torch.set_rng_state(rng_state)
         torch.manual_seed(0)
         eval_model = ModelPIRBFDoubleOneStatic(rbf = rbf, resolution = resolution, lims = [mn, mx], weightinit = winit, extra_feat_len = xtra_feat_length)
-        #eval_model.freeze_persistence = True
-        #if run==0 and fold == 0: print(eval_model.rbfweights)
+        eval_model.update = True
+        outcrap = eval_model(data)
+        del outcrap
+        gc.collect()
 
         ##### If fix wavelet #######
-        if wavelet_opt <= 0:
-            pht.freeze_persistence = True
-            for name, param in pht.named_parameters():
-                if 'rbfweights' in name:
-                    param.requires_grad = False
-                else:
-                    param.requires_grad = True
+        #if wavelet_opt <= 0:
+        #    pht.freeze_persistence = True
+        #    eval_model.freeze_persistence = True
+        #    for name, param in pht.named_parameters():
+        #        if 'rbfweights' in name:
+        #            param.requires_grad = False
+        #        else:
+        #            param.requires_grad = True
 
 
         ema = EMA(ema_decay)
@@ -232,37 +234,22 @@ for run in range(1, 10):
         for epoch in range(max_epoch):
             pht.train()
             np.random.shuffle(train_indices)
-            #if epoch == 1:
-            #    for name, param in pht.named_parameters():
-            #        if 'CNN' in name:
-            #            param.requires_grad = False
 
             if epoch == wavelet_opt:
-                #eval_model.update = True
-                #outputs = eval_model(data) # update all frozen vectors to latest parameters
-                eval_model.freeze_persistence = True
+
+
+                pht.freeze_persistence = False
                 pht.update = True
-                outputs = pht(data)
+                outputs = pht(data) #with update  = true, computes and stores all images
                 pht.freeze_persistence = True
 
                 for name, param in pht.named_parameters():
-                    if 'CNN' in name:
-                        param.requires_grad = True
                     if 'rbfweights' in name:
                         param.requires_grad = False
-                #if run == 0 and epoch == 0:
-                #    fig, ((ax1, ax2, ax7), (ax3, ax4, ax8) , (ax5, ax6, ax9))  = plt.subplots(3,3)
-                #    ax1.imshow(data[-47]['images'][0,0])
-                #    #ax2.imshow(placeholder[0])
-                #    ax3.imshow(data[-47]['images'][0,1])
-                #    #ax4.imshow(placeholder[1])
-                #    ax5.imshow(data[-47]['images'][0,2])
-                    #ax6.imshow(placeholder[2])
-                    #ax7.imshow(placeholder[0] - data[0]['images'][0,0])
-                    #ax8.imshow(placeholder[1] - data[0]['images'][0,1])
-                    #ax9.imshow(placeholder[2] - data[0]['images'][0,2])
-                #    plt.show()
-                    #crap
+                    else:
+                        param.requires_grad = True
+
+                eval_model.freeze_persistence = True
             tna = 0
             lss = 0
 
@@ -292,7 +279,7 @@ for run in range(1, 10):
                 lss += float(loss)
                 #train_acc.append(int(((outputs.view(-1) > 0) == label[train_indices_batch]).sum())/len(train_indices_batch))
                 #loss_func.append(float(loss))
-                #rbf_grad.append(float(pht.rbfweights.grad.data.norm(2)))
+
             eval_model.load_state_dict(ema.shadow)
             eval_model.eval()
             if epoch < wavelet_opt:
