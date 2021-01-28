@@ -12,6 +12,8 @@ from playground import *
 import iisignature
 from multiprocessing import Pool
 
+from functools import partial
+
 def normalize_nzs(x):
     entries = torch.where(x>0)
     nzs = x[entries]
@@ -321,7 +323,8 @@ class ModelPIRBFDoubleOneStatic(nn.Module):
         self.lims = lims
         self.sigma = 1/(resolution-3)
         self.resolution = resolution
-        self.PHPI = GenPHandPI(self.resolution, self.lims)
+        self.filtername = 'f'
+        self.PHPI = GenPHandPI(self.resolution, self.lims, self.max_num_intervals, self.filtername)
 
         #self.CNN= nn.Sequential(nn.BatchNorm2d(3), nn.Conv2d(in_channels = 3,out_channels = 15, kernel_size = 2, stride = 1), nn.ReLU(), nn.BatchNorm2d(15), nn.Conv2d(in_channels = 15,out_channels = 1, kernel_size = 2, stride = 1), nn.ReLU(), nn.Dropout2d(0.6))
         self.CNN= nn.Sequential(nn.BatchNorm2d(6), nn.Conv2d(in_channels = 6,out_channels = 16, kernel_size = 2, stride = 1, groups = 2), nn.ReLU(), nn.BatchNorm2d(16), nn.Conv2d(in_channels = 16,out_channels = 2, kernel_size = 2, stride = 1), nn.ReLU())
@@ -329,7 +332,7 @@ class ModelPIRBFDoubleOneStatic(nn.Module):
         self.extra_feat_len = extra_feat_len
         butt = 2*(self.resolution -2)**2 + extra_feat_len
         if extra_feat_len > 0:
-            self.feats_preprocess = nn.Sequential(nn.BatchNorm1d(extra_feat_len, affine = False), nn.Linear(extra_feat_len, extra_feat_len), nn.ReLU(), nn.BatchNorm1d(extra_feat_len))
+            self.feats_preprocess = nn.Sequential(nn.BatchNorm1d(extra_feat_len, affine = False), nn.Linear(extra_feat_len, extra_feat_len), nn.ReLU(), nn.BatchNorm1d(extra_feat_len, affine = False))
 
         self.project = nn.Sequential(nn.Dropout(0.5), nn.Linear(butt, 1))
         self.mn = min(lims)
@@ -342,38 +345,38 @@ class ModelPIRBFDoubleOneStatic(nn.Module):
     def forward(self, mb):
 
         L = len(mb)
-        PIs = torch.zeros([L, 6, self.resolution, self.resolution])
+        #PIs = torch.zeros([L, 6, self.resolution, self.resolution])
 
         if self.extra_feat_len > 0:
-            feats = torch.zeros([L, self.extra_feat_len])
-            for i in range(L):
-                feats[i] = mb[i]['feats']
+            #feats = torch.zeros([L, self.extra_feat_len])
+            #for i in range(L):
+            #    feats[i] = mb[i]['feats']
 
+            feats = torch.cat([datum['feats'].unsqueeze(0) for datum in mb], dim = 0)
             feats = self.feats_preprocess(feats)
 
-        for i in range(L):
-            if self.freeze_persistence :
-                PIs[i] = mb[i]['images']
-            else:
-                PIs[i][3:] = mb[i]['images'][3:]
+        #for i in range(L):
 
-        if self.freeze_persistence == False:
+        #    if self.freeze_persistence :
+        #        PIs[i] = mb[i]['images']
+        #    else:
+        #        PIs[i][3:] = mb[i]['images'][3:]
 
-            births = torch.zeros([L, 3, max(self.max_num_intervals)])
-            deaths = torch.zeros([L, 3, max(self.max_num_intervals)])
-
+        if self.freeze_persistence:
+            PIs = torch.cat([datum['images'].unsqueeze(0) for datum in mb], dim = 0)
+        else:
+            PI_static =  torch.cat([datum['images'][3:].unsqueeze(0) for datum in mb], dim = 0)
             for i in range(L):
                 datum = mb[i]
-                f = (torch.matmul(datum['secondary_gram'], self.rbfweights).flatten() - self.mn)/(self.range)
-                mb[i]['f'] = f
+                f = torch.matmul(datum['secondary_gram'], self.rbfweights).flatten()
+                mb[i][self.filtername] = f
 
             PI_dynamic = self.PHPI(mb)
-            PIs[:,0:3,:,:] = PI_dynamic
+            PIs = torch.cat([PI_dynamic, PI_static], dim = 1)
 
             if self.update :
                 for i in range(L):
                     mb[i]['images'][0:3] = PI_dynamic[i].detach().clone().unsqueeze(0)
-            del births, deaths
 
         PIs = self.CNN(PIs)
         features = torch.reshape(PIs, [L, -1])
@@ -387,12 +390,12 @@ class ModelPIRBFDoubleOneStatic(nn.Module):
 
 class GenPHandPI(nn.Module):
 
-    def __init__(self, resolution = 10, lims = [0.0, 1.0], filtername = 'f'):
+    def __init__(self, resolution = 10, lims = [0.0, 1.0], max_num_intervals = [100, 100, 100], filtername = 'f'):
 
         super(GenPHandPI, self).__init__()
 
         self.resolution = resolution
-        self.max_num_intervals = [100, 100, 100]
+        self.max_num_intervals = max_num_intervals
         self.mn = min(lims)
         self.mx = max(lims)
         self.range = abs(self.mx - self.mn)
@@ -410,48 +413,14 @@ class GenPHandPI(nn.Module):
         deaths = torch.zeros([L, 3, max(self.max_num_intervals)])
 
         for i in range(L):
-            datum = mb[i]
-            f = (datum[self.filtername]- self.mn)/(self.range)
-
-            birthv = [[],[],[]]
-            deathv = [[],[],[]]
-            #recompute persistence
-            datum['simplex_tree'] = filtration_update(datum['simplex_tree'], f.detach().numpy())
-            pers = datum['simplex_tree'].persistence(homology_coeff_field = 2)
-
-            pairs =  datum['simplex_tree'].persistence_pairs()
-            for interval in pairs:
-                if len(interval[1]) == 0: #skip infinite bars
-                    continue
-                else:
-                    if len(interval[0]) == 1: #H0
-                        bv = interval[0][0]
-                        dv = max([v for v in interval[1] if v != 1000], key = lambda v: f[v])
-                        k = 0
-                    if len(interval[0]) == 2: #H1
-                        dv = max([v for v in interval[0] if v != 1000], key = lambda v: f[v])
-                        bv = min([v for v in interval[1] if v != 1000], key = lambda v: f[v])
-                        if 1000 in interval[0]:
-                            k = 1
-                        else:
-                            k = 2
-                birthv[k].append(bv)
-                deathv[k].append(dv)
-
+            bv, dv = critical_vertices(mb[i], self.max_num_intervals, self.filtername )
+            f = (mb[i][self.filtername]- self.mn)/self.range
             for k in range(3):
-                if len(birthv[k]) > 0:
-                    b = f[birthv[k]]
-                    d = f[deathv[k]]
+                l = len(bv[k])
+                if l > 0:
+                    births[i, k, 0:l] = f[bv[k]]
+                    deaths[i, k, 0:l] = f[dv[k]]
 
-                    if len(b) > self.max_num_intervals[k]:
-                        p = torch.abs(f[birthv[k]] - f[deathv[k]])
-                        truncation = torch.topk(p, self.max_num_intervals[k], largest=True, sorted=False).indices
-                        b = b[truncation]
-                        d = d[truncation]
-                    births[i, k,0:len(b)] = b
-                    deaths[i, k,0:len(d)] = d
-                    del b, d
-            del birthv, deathv
 
         births = torch.reshape(births, [L*3, -1])
         deaths = torch.reshape(deaths, [L*3, -1])
@@ -460,3 +429,44 @@ class GenPHandPI(nn.Module):
         del births, deaths
 
         return PIs
+
+
+
+
+def critical_vertices(datum, max_num_intervals= [100,100,100], filtername = 'f'):
+
+    f = datum[filtername]
+
+    birthv = [[],[],[]]
+    deathv = [[],[],[]]
+    #recompute persistence
+    datum['simplex_tree'] = filtration_update(datum['simplex_tree'], f.detach().numpy())
+    pers = datum['simplex_tree'].persistence(homology_coeff_field = 2)
+
+    pairs =  datum['simplex_tree'].persistence_pairs()
+    for interval in pairs:
+        if len(interval[1]) == 0: #skip infinite bars
+            continue
+        else:
+            if len(interval[0]) == 1: #H0
+                bv = interval[0][0]
+                dv = max([v for v in interval[1] if v != 1000], key = lambda v: f[v])
+                k = 0
+            if len(interval[0]) == 2: #H1
+                dv = max([v for v in interval[0] if v != 1000], key = lambda v: f[v])
+                bv = min([v for v in interval[1] if v != 1000], key = lambda v: f[v])
+                if 1000 in interval[0]:
+                    k = 1
+                else:
+                    k = 2
+        if torch.abs(f[bv] - f[dv])> 1e-9:
+            birthv[k].append(bv)
+            deathv[k].append(dv)
+
+    for k in range(3):
+        if len(birthv[k]) > max_num_intervals[k]:
+            p = torch.abs(f[birthv[k]] - f[deathv[k]])
+            truncation = torch.topk(p, max_num_intervals[k], largest=True, sorted=False).indices
+            birthv[k] = [birthv[k][i] for i in truncation]
+            deathv[k] = [deathv[k][i] for i in truncation]
+    return birthv, deathv

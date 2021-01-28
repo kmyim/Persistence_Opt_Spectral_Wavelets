@@ -19,7 +19,7 @@ gc.collect()
 # persistence image
 resolution = 20 # res x res image
 error_tol = 0 #only recompute persistence when change in filter function > error_tol
-expt_name = 'rbf12_diag_double_picnn_eigsig'
+expt_name = 'rbf12_diag_double_picnn_eigsig_bugfix'
 rbf = 12
 lr = 1e-2
 ema_decay = 0.9
@@ -170,7 +170,7 @@ outcrap = eval_model(data)
 
 label = torch.tensor(label).float()
 print('Finished initial processing')
-del graph_list
+del graph_list, outcrap
 gc.collect()
 print(mn,  mx)
 torch.set_rng_state(rng_state) #fix init state
@@ -178,7 +178,7 @@ shuffidx = list(range(data_len)) # data indexer
 criterion = nn.BCEWithLogitsLoss() #loss function
 
 
-for run in range(10):
+for run in range(1, 10):
     print('run = ', run)
     np.random.seed(run)
     np.random.shuffle(shuffidx) # randomly choose partition of data into test / fold
@@ -208,7 +208,7 @@ for run in range(10):
         torch.set_rng_state(rng_state)
         torch.manual_seed(0)
         eval_model = ModelPIRBFDoubleOneStatic(rbf = rbf, resolution = resolution, lims = [mn, mx], weightinit = winit, extra_feat_len = xtra_feat_length)
-        eval_model.freeze_persistence = True
+        #eval_model.freeze_persistence = True
         #if run==0 and fold == 0: print(eval_model.rbfweights)
 
         ##### If fix wavelet #######
@@ -302,11 +302,11 @@ for run in range(10):
             loss_func.append(lss/len(train_indices))
 
             if epoch in epoch_samples:
-
                 eval_model.load_state_dict(ema.shadow)
                 eval_model.eval()
                 pht.eval()
                 #test_outputs = pht([data[i] for i in test_indices])
+
                 test_outputs = eval_model([data[i] for i in test_indices])
                 test_acc.append(int(((test_outputs.view(-1) > 0) == label[test_indices]).sum())/len(test_indices))
 

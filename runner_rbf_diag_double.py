@@ -186,7 +186,7 @@ for run in range(10):
         torch.set_rng_state(rng_state)
         torch.manual_seed(0)
         eval_model = ModelPIRBFDoubleOneStatic(rbf = rbf, resolution = resolution, lims = [mn, mx], weightinit = winit)
-        eval_model.freeze_persistence = True
+        #eval_model.freeze_persistence = True
         #if run==0 and fold == 0: print(eval_model.rbfweights)
 
         ##### If fix wavelet #######
