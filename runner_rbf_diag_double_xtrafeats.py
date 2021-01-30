@@ -20,11 +20,13 @@ gc.collect()
 # persistence image
 resolution = 20 # res x res image
 error_tol = 0 #only recompute persistence when change in filter function > error_tol
-expt_name = 'rbf12_diag_double_picnn_eigsig_bugfix_static'
+expt_name = 'rbf12_diag_double_picnn_eigsig_notaken_2do_minmax_bugfix'
 rbf = 12
 lr = 1e-2
 ema_decay = 0.9
-xtra_feat = True  #if  true, add extra features to model
+xtra_feat = True #if  true, add extra features to model
+Takens = False
+
 
 rbfeps = 2/(rbf-3)
 centroids = torch.linspace(-rbfeps, 2 + rbfeps, rbf)
@@ -44,9 +46,10 @@ data_len = len(graph_list)
 
 ##### training parameters #####
 max_epoch = 200
-wavelet_opt = 0
+wavelet_opt = 50
 epoch_samples = [k for k in [0, 24, 49, 75, 99, 124, 149, 174, 199] if k < max_epoch]
 bs = {'DHFR/': 11, 'MUTAG/': 10, 'COX2/': 9, 'IMDB-BINARY/': 18, 'NCI1/': 20, 'IMDB-MULTI/': 27 }
+
 batch_size = bs[dataset_name]
 test_size =  data_len // 10
 train_batches = np.ceil((data_len-test_size)/batch_size).astype(int)
@@ -59,7 +62,9 @@ rng_state= torch.get_rng_state() #seed init to ensure same initial conditions fo
 if xtra_feat:
     pslevel = 4
     sig_prep = iisignature.prepare(2, pslevel)
-    xtra_feat_length = iisignature.logsiglength(2, pslevel)
+    #xtra_feat_length = iisignature.logsiglength(2, pslevel)
+    siglength = iisignature.logsiglength(2, pslevel)
+    xtra_feat_length = siglength + 2
 else:
     xtra_feat_length = 0
 
@@ -82,11 +87,17 @@ for i in range(len(graph_list)):
     label.append(G.graph['label'])
 
     if xtra_feat:
-        path =  np.zeros([len(lam)-1, 2]) #taken's embedding of eigenvalues
-        path[:,0] = lam[1:]
-        path[:,1] = lam[:-1]
-        datum['feats'] = torch.tensor(iisignature.logsig(path,sig_prep)).float()
-
+        if Takens:
+            path =  np.zeros([len(lam)-1, 2]) #taken's embedding of eigenvalues
+            path[:,0] = lam[1:]
+            path[:,1] = lam[:-1]
+        else:
+            path =  np.zeros([len(lam), 2])
+            path[:,0] = lam
+            path[:,1] = np.linspace(0, 2, len(lam))
+        #datum['feats'] = torch.tensor(iisignature.logsig(path,sig_prep)).float()
+        feats = torch.zeros([xtra_feat_length])
+        feats[2:] = torch.tensor(iisignature.logsig(path,sig_prep)).float()
 
     evecssq = torch.from_numpy(v**2).float()
     gram = 1/torch.sqrt((torch.reshape(w, [len(G), 1]) - centroids)**2/rbfeps**2 + 1)
@@ -97,8 +108,10 @@ for i in range(len(graph_list)):
 
     datum['f'] = hks
     datum['f_static'] =  hks_another
-
-
+    feats[0] = torch.min(hks_another)
+    feats[1] = torch.max(hks_another)
+    datum['feats'] = feats
+    datum['fminmax'] = torch.zeros(2)
     st = simplex_tree_constructor([list(e) for e in G.edges()])
     datum['simplex_tree'] = filtration_update(st, hks.numpy())
     datum['images'] = torch.zeros([6, resolution, resolution])
@@ -117,6 +130,7 @@ for i in range(len(graph_list)):
         hkslist = np.append(hkslist, hks)
     data.append(datum)
 
+print(mn,mx)
 
 genphandpi = GenPHandPI(resolution, lims = [mn, mx], filtername = 'f_static' )
 PIs_static = genphandpi(data)
@@ -133,8 +147,8 @@ gc.collect()
 winit = np.matmul(u.T, hkslist)
 reconstruct_delta = np.abs(np.matmul(u, winit)- hkslist)
 error_max = np.argmax(reconstruct_delta)
-print(winit, winit.shape)
-print(reconstruct_delta[error_max], hkslist[error_max])
+#print(winit, winit.shape)
+#print(reconstruct_delta[error_max], hkslist[error_max])
 
 winit = torch.tensor(winit).float()
 coeffs = winit
@@ -152,10 +166,6 @@ for i in range(len(graph_list)):
     hks = torch.flatten(torch.matmul(dat['secondary_gram'], winit)).float().detach()
     mx = max(float(torch.max(hks)), mx)
     mn = min(float(torch.min(hks)), mn)
-
-#print(mn,mx)
-
-
 
 del u, s, vh, PIs_static
 
@@ -211,6 +221,9 @@ for run in range(10):
         outcrap = eval_model(data)
         del outcrap
         gc.collect()
+        #for i in range(6):
+        #    plt.imshow(data[-1]['images'][i])
+        #    plt.show()
 
         ##### If fix wavelet #######
         #if wavelet_opt <= 0:
@@ -305,7 +318,7 @@ for run in range(10):
         pickle.dump(loss_func, open(result_dump + 'loss_' + run_fold_index+'.pkl', 'wb'))
         #pickle.dump(rbf_grad, open(result_dump + 'dtheta_'+ run_fold_index+'.pkl', 'wb'))
         pickle.dump(rbf_params, open(result_dump + 'theta_' + run_fold_index+ '.pkl', 'wb'))
-        print(max(train_acc), train_acc[-1], max(test_acc), test_acc[-1])
+        #print(max(train_acc), train_acc[-1], max(test_acc), test_acc[-1])
 
         del rbf_params, train_acc, test_acc, loss_func, eval_model, pht
         gc.collect()

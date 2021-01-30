@@ -72,19 +72,23 @@ class PersistenceImage(nn.Module):
 
     def forward(self, b, d):
         nz = torch.abs(d-b)>0
-        p = torch.abs(d-b)
-        X = (b.unsqueeze(-1) - self.x)**2
-        X = torch.exp(-X/2/self.sigma**2).transpose(-1,-2)
-        #Y = (d.unsqueeze(-1) - self.y)**2
-        Y =  (p.unsqueeze(-1) - self.y)**2
-        Y = torch.exp(-Y/2/self.sigma**2)
-        Y = nz.unsqueeze(-1)*Y
-        #Y = (p**2).unsqueeze(-1)*Y
-        #w = 1-torch.cos(np.pi*p/self.range)
-        w  = torch.clamp(p, 0,self.offset)*np.pi/self.offset
-        w = (1- torch.cos(w))/2
-        Y = w.unsqueeze(-1)*Y
-        PI = torch.matmul(X, Y)/self.sigma**2
+        N = int(torch.sum(nz))
+        if N > 0:
+            p = torch.abs(d-b)
+            X = (b.unsqueeze(-1) - self.x)**2
+            X = torch.exp(-X/2/self.sigma**2).transpose(-1,-2)
+            #Y = (d.unsqueeze(-1) - self.y)**2
+            Y =  (p.unsqueeze(-1) - self.y)**2
+            Y = torch.exp(-Y/2/self.sigma**2)
+            Y = nz.unsqueeze(-1)*Y
+            #Y = (p**2).unsqueeze(-1)*Y
+            #w = 1-torch.cos(np.pi*p/self.range)
+            w  = torch.clamp(p, 0,self.offset)*np.pi/self.offset
+            w = (1- torch.cos(w))/2
+            Y = w.unsqueeze(-1)*Y
+            PI = torch.matmul(X, Y)/self.sigma**2
+        else:
+            PI = torch.zeros([self.resolution, self.resolution])
 
         # exp
         #X = torch.abs(b.unsqueeze(-1) - self.x)
@@ -292,6 +296,36 @@ class feed_forward_mlps(nn.Module):
 
         return self.sequenced(x)
 
+class cnn_builder(nn.Module):
+
+    def __init__(self, pxs, channels, kernel, stride, padding, groups, dropout):
+
+        super(cnn_builder, self).__init__()
+
+        mlp_list = []
+        width = pxs
+
+        for l in range(len(channels)-1):
+            width = int(np.floor((width - kernel[l] + 2*padding[l])/stride[l]) + 1)
+
+            if dropout and l == len(channels)-2 :
+
+                mlp_list.append(nn.Sequential(nn.BatchNorm2d(channels[l], affine = False), nn.Dropout2d(0.5), nn.Conv2d(in_channels = channels[l], out_channels = channels[l+1], kernel_size = kernel[l], stride = stride[l], groups = groups[l], padding = padding[l],), nn.ReLU()))
+
+            else:
+                mlp_list.append(nn.Sequential(nn.BatchNorm2d(channels[l], affine = False), nn.Conv2d(in_channels = channels[l],out_channels = channels[l+1], kernel_size = kernel[l], stride = stride[l], groups = groups[l], padding = padding[l],), nn.ReLU()))
+
+
+        if not dropout:
+            mlp_list.append(nn.BatchNorm2d(channels[-1], affine = False))
+
+        self.sequenced = nn.Sequential(*mlp_list)
+        self.out_size = channels[-1]*width**2
+
+    def forward(self, x):
+
+        return self.sequenced(x)
+
 class EMA():
 
     def __init__(self, alpha):
@@ -325,18 +359,25 @@ class ModelPIRBFDoubleOneStatic(nn.Module):
         self.resolution = resolution
         self.filtername = 'f'
         self.PHPI = GenPHandPI(self.resolution, self.lims, self.max_num_intervals, self.filtername)
-        conv_filters = [6,20,2]
+        channels = [6,20,2]
+        kernel = [2,2]
+        stride = [1,1]
+        padding = [1,1]
+        groups = [2,2]
+        dropout = True
         #self.CNN= nn.Sequential(nn.BatchNorm2d(3), nn.Conv2d(in_channels = 3,out_channels = 15, kernel_size = 2, stride = 1), nn.ReLU(), nn.BatchNorm2d(15), nn.Conv2d(in_channels = 15,out_channels = 1, kernel_size = 2, stride = 1), nn.ReLU(), nn.Dropout2d(0.6))
         #self.CNN= nn.Sequential(nn.BatchNorm2d(6), nn.Conv2d(in_channels = 6,out_channels = 16, kernel_size = 2, stride = 1, groups = 2), nn.ReLU(), nn.BatchNorm2d(16), nn.Conv2d(in_channels = 16,out_channels = 2, kernel_size = 2, stride = 1), nn.ReLU())
-        self.CNN= nn.Sequential(nn.BatchNorm2d(conv_filters[0]), nn.Conv2d(in_channels = conv_filters[0],out_channels = conv_filters[1], kernel_size = 2, stride = 1, groups = 2), nn.ReLU(), nn.BatchNorm2d(conv_filters[1]), nn.Conv2d(in_channels = conv_filters[1],out_channels = conv_filters[2], kernel_size = 2, stride = 1, groups = 2), nn.ReLU(),  nn.BatchNorm2d(conv_filters[2]))
+        #self.CNN= nn.Sequential(nn.BatchNorm2d(conv_filters[0]), nn.Conv2d(in_channels = conv_filters[0],out_channels = conv_filters[1], kernel_size = kern_size[0], stride = stride[0], groups = 2), nn.ReLU(), nn.BatchNorm2d(conv_filters[1]), nn.Conv2d(in_channels = conv_filters[1],out_channels = conv_filters[2], kernel_size = kern_size[1], stride = stride[1], groups = 2), nn.ReLU(),  nn.BatchNorm2d(conv_filters[2]))
+        self.CNN = cnn_builder(self.resolution, channels, kernel, stride, padding, groups, dropout)
 
-        self.extra_feat_len = extra_feat_len
-        butt = conv_filters[2]*(self.resolution -2)**2 + extra_feat_len
-        self.butt = butt
+        self.extra_feat_len = extra_feat_len + 2
+        #butt = self.CNN.out_size + extra_feat_len
+        butt = self.CNN.out_size + self.extra_feat_len
+
         if extra_feat_len > 0:
-            self.feats_preprocess = nn.Sequential(nn.BatchNorm1d(extra_feat_len, affine = False), nn.Linear(extra_feat_len, extra_feat_len), nn.ReLU(), nn.BatchNorm1d(extra_feat_len, affine = False))
+            self.feats_preprocess = nn.Sequential(nn.BatchNorm1d(self.extra_feat_len, affine = False), nn.Linear(self.extra_feat_len, self.extra_feat_len), nn.ReLU(), nn.BatchNorm1d(self.extra_feat_len, affine = False))
 
-        self.project = nn.Sequential(nn.Dropout(0.5), nn.Linear(butt, 1))
+        self.project = nn.Sequential(nn.Linear(butt, 1))
         self.mn = min(lims)
         self.mx = max(lims)
         self.range = abs(self.mx - self.mn)
@@ -350,16 +391,22 @@ class ModelPIRBFDoubleOneStatic(nn.Module):
 
         if self.extra_feat_len > 0:
             feats = torch.cat([datum['feats'].unsqueeze(0) for datum in mb], dim = 0)
-            feats = self.feats_preprocess(feats)
+
 
         if self.freeze_persistence:
             PIs = torch.cat([datum['images'].unsqueeze(0) for datum in mb], dim = 0)
+            minmax = torch.cat([datum['fminmax'] for datum in mb], dim = 0)
         else:
+            minmax = torch.zeros([L, 2])
             PI_static =  torch.cat([datum['images'][3:].unsqueeze(0) for datum in mb], dim = 0)
 
             for i in range(L):
                 f = torch.matmul(mb[i]['secondary_gram'], self.rbfweights).flatten()
                 mb[i][self.filtername] = f
+                minmax[i,0] = torch.min(f)
+                minmax[i,1] = torch.max(f)
+                if self.update :
+                    mb[i]['fminmax'] = minmax[i].detach().clone().unsqueeze(0)
 
             PI_dynamic = self.PHPI(mb)
             PIs = torch.cat([PI_dynamic, PI_static], dim = 1)
@@ -368,6 +415,8 @@ class ModelPIRBFDoubleOneStatic(nn.Module):
                     mb[i]['images'][0:3] = PI_dynamic[i].detach().clone().unsqueeze(0)
 
         PIs = self.CNN(PIs)
+        feats = torch.cat((feats, minmax), dim = 1)
+        feats = self.feats_preprocess(feats)
         features = torch.reshape(PIs, [L, -1])
 
         if  self.extra_feat_len > 0:
