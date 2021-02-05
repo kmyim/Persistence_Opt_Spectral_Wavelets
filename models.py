@@ -71,7 +71,7 @@ class PersistenceImage(nn.Module):
         self.r = 2
 
     def forward(self, b, d):
-        nz = torch.abs(d-b)>0
+        nz = torch.abs(d-b)>self.offset/2
         N = int(torch.sum(nz))
         if N > 0:
             p = torch.abs(d-b)
@@ -351,7 +351,7 @@ class ModelPIRBFDoubleOneStatic(nn.Module):
         if type(weightinit) == type(None):
             self.rbfweights = nn.Parameter(torch.empty(rbf, 1).normal_(mean = 0, std = 1/np.sqrt(rbf)), requires_grad = True)
         else:
-            self.rbfweights = nn.Parameter(torch.reshape(weightinit, [rbf, 1]), requires_grad = True)
+            self.rbfweights = nn.Parameter(torch.reshape(weightinit.detach().clone(), [rbf, 1]), requires_grad = True)
         self.resolution = resolution
         self.max_num_intervals = [500, 500, 500]
         self.lims = lims
@@ -370,7 +370,7 @@ class ModelPIRBFDoubleOneStatic(nn.Module):
         #self.CNN= nn.Sequential(nn.BatchNorm2d(conv_filters[0]), nn.Conv2d(in_channels = conv_filters[0],out_channels = conv_filters[1], kernel_size = kern_size[0], stride = stride[0], groups = 2), nn.ReLU(), nn.BatchNorm2d(conv_filters[1]), nn.Conv2d(in_channels = conv_filters[1],out_channels = conv_filters[2], kernel_size = kern_size[1], stride = stride[1], groups = 2), nn.ReLU(),  nn.BatchNorm2d(conv_filters[2]))
         self.CNN = cnn_builder(self.resolution, channels, kernel, stride, padding, groups, dropout)
 
-        self.extra_feat_len = extra_feat_len + 2
+        self.extra_feat_len = extra_feat_len
         #butt = self.CNN.out_size + extra_feat_len
         butt = self.CNN.out_size + self.extra_feat_len
 
@@ -395,37 +395,36 @@ class ModelPIRBFDoubleOneStatic(nn.Module):
 
         if self.freeze_persistence:
             PIs = torch.cat([datum['images'].unsqueeze(0) for datum in mb], dim = 0)
-            minmax = torch.cat([datum['fminmax'] for datum in mb], dim = 0)
+        #minmax = torch.cat([datum['fminmax'] for datum in mb], dim = 0)
         else:
-            minmax = torch.zeros([L, 2])
+            #minmax = torch.zeros([L, 2])
             PI_static =  torch.cat([datum['images'][3:].unsqueeze(0) for datum in mb], dim = 0)
 
             for i in range(L):
-                f = torch.matmul(mb[i]['secondary_gram'], self.rbfweights).flatten()
-                mb[i][self.filtername] = f
-                minmax[i,0] = torch.min(f)
-                minmax[i,1] = torch.max(f)
-                if self.update :
-                    mb[i]['fminmax'] = minmax[i].detach().clone().unsqueeze(0)
+                if mb[i]['diameter'] > 1:
+                    f = torch.matmul(mb[i]['secondary_gram'], self.rbfweights).flatten()
+                    mb[i][self.filtername] = f
+                #minmax[i,0] = torch.min(f)
+                #minmax[i,1] = torch.max(f)
+                #if self.update :
+                #    mb[i]['fminmax'] = minmax[i].detach().clone().unsqueeze(0)
 
             PI_dynamic = self.PHPI(mb)
             PIs = torch.cat([PI_dynamic, PI_static], dim = 1)
             if self.update :
                 for i in range(L):
-                    mb[i]['images'][0:3] = PI_dynamic[i].detach().clone().unsqueeze(0)
+                    if mb[i]['diameter'] > 1:
+                        mb[i]['images'][0:3] = PI_dynamic[i].detach().clone().unsqueeze(0)
 
         PIs = self.CNN(PIs)
-        feats = torch.cat((feats, minmax), dim = 1)
-        feats = self.feats_preprocess(feats)
         features = torch.reshape(PIs, [L, -1])
 
         if  self.extra_feat_len > 0:
+            #feats = torch.cat((feats, minmax), dim = 1)
+            feats = self.feats_preprocess(feats)
             features = torch.cat((features, feats), dim = 1)
 
         return self.project(features)
-
-
-
 
 class GenPHandPI(nn.Module):
 
@@ -452,13 +451,15 @@ class GenPHandPI(nn.Module):
         deaths = torch.zeros([L, 3, max(self.max_num_intervals)])
 
         for i in range(L):
-            bv, dv = critical_vertices(mb[i], self.max_num_intervals, self.filtername )
             f = (mb[i][self.filtername]- self.mn)/self.range
-            for k in range(3):
-                l = len(bv[k])
-                if l > 0:
-                    births[i, k, 0:l] = f[bv[k]]
-                    deaths[i, k, 0:l] = f[dv[k]]
+            if torch.max(f) - torch.min(f) > self.sigma/10 and mb[i]['diameter'] > 1:
+                bv, dv = critical_vertices(mb[i], self.max_num_intervals, self.filtername )
+
+                for k in range(3):
+                    l = len(bv[k])
+                    if l > 0:
+                        births[i, k, 0:l] = f[bv[k]]
+                        deaths[i, k, 0:l] = f[dv[k]]
 
 
         births = torch.reshape(births, [L*3, -1])
@@ -468,9 +469,6 @@ class GenPHandPI(nn.Module):
         del births, deaths
 
         return PIs
-
-
-
 
 def critical_vertices(datum, max_num_intervals= [100,100,100], filtername = 'f'):
 
@@ -509,3 +507,92 @@ def critical_vertices(datum, max_num_intervals= [100,100,100], filtername = 'f')
             birthv[k] = [birthv[k][i] for i in truncation]
             deathv[k] = [deathv[k][i] for i in truncation]
     return birthv, deathv
+
+
+class ModelPIRBFDouble(nn.Module):
+
+    def __init__(self, rbf = 10, resolution = 10, lims = [0.0, 1.0], weightinit = None, extra_feat_len = 0):
+        '''
+        Now weight_init is a 2x #params tensor
+        lims is a 2x2 list
+
+        '''
+
+        super(ModelPIRBFDouble, self).__init__()
+
+        if type(weightinit) == type(None):
+            self.rbfweights = nn.Parameter(torch.empty(rbf, 1).normal_(mean = 0, std = 1/np.sqrt(rbf)), requires_grad = True)
+        else:
+            self.rbfweights = nn.Parameter(torch.reshape(weightinit.detach().clone(), [rbf, 2]), requires_grad = True)
+        self.resolution = resolution
+        self.max_num_intervals = [500, 500, 500]
+        self.lims = lims
+        self.sigma = 1/(resolution-3)
+        self.resolution = resolution
+        self.filtername = ['f', 'g']
+        self.PHPI1 = GenPHandPI(self.resolution, self.lims[0], self.max_num_intervals, self.filtername[0])
+        self.PHPI2 = GenPHandPI(self.resolution, self.lims[1], self.max_num_intervals, self.filtername[1])
+        channels = [6, 20, 2]
+        kernel = [2,2]
+        stride = [1,1]
+        padding = [1,1]
+        groups = [2,2]
+        dropout = True
+
+        self.CNN = cnn_builder(self.resolution, channels, kernel, stride, padding, groups, dropout)
+
+        self.extra_feat_len = extra_feat_len
+        #butt = self.CNN.out_size + extra_feat_len
+        butt = self.CNN.out_size + self.extra_feat_len
+
+        if extra_feat_len > 0:
+            self.feats_preprocess = nn.Sequential(nn.BatchNorm1d(self.extra_feat_len, affine = False), nn.Linear(self.extra_feat_len, self.extra_feat_len), nn.ReLU(), nn.BatchNorm1d(self.extra_feat_len, affine = False))
+
+        self.project = nn.Sequential(nn.Linear(butt, 1))
+
+        self.freeze_persistence = False
+        self.update = False
+
+    def forward(self, mb):
+
+        L = len(mb)
+
+        if self.extra_feat_len > 0:
+            feats = torch.cat([datum['feats'].unsqueeze(0) for datum in mb], dim = 0)
+
+
+        if self.freeze_persistence:
+            PIs = torch.cat([datum['images'].unsqueeze(0) for datum in mb], dim = 0)
+        #minmax = torch.cat([datum['fminmax'] for datum in mb], dim = 0)
+        else:
+            #minmax = torch.zeros([L, 2])
+            #PI_static =  torch.cat([datum['images'][3:].unsqueeze(0) for datum in mb], dim = 0)
+
+            for i in range(L):
+                if mb[i]['diameter'] > 1:
+                    for k in range(2):
+                        f = torch.matmul(mb[i]['secondary_gram'], self.rbfweights[:,k]).flatten()
+                        mb[i][self.filtername[k]] = f
+                #minmax[i,0] = torch.min(f)
+                #minmax[i,1] = torch.max(f)
+                #if self.update :
+                #    mb[i]['fminmax'] = minmax[i].detach().clone().unsqueeze(0)
+
+            PI_dynamic1 = self.PHPI1(mb)
+            PI_dynamic2 = self.PHPI2(mb)
+            PIs = torch.cat([PI_dynamic1, PI_dynamic2], dim = 1)
+            #PIs = torch.cat([PI_dynamic1, PI_dynamic2, PI_static], dim = 1)
+            if self.update :
+                for i in range(L):
+                    if mb[i]['diameter'] > 1:
+                        mb[i]['images'] = PIs[i].detach().clone().unsqueeze(0)
+
+        PIs = self.CNN(PIs)
+        features = torch.reshape(PIs, [L, -1])
+
+        if  self.extra_feat_len > 0:
+            #feats = torch.cat((feats, minmax), dim = 1)
+            feats = self.feats_preprocess(feats)
+            features = torch.cat((features, feats), dim = 1)
+
+        return self.project(features)

@@ -19,17 +19,33 @@ gc.collect()
 #torch.set_num_threads(4)
 # persistence image
 resolution = 20 # res x res image
-error_tol = 0 #only recompute persistence when change in filter function > error_tol
-expt_name = 'rbf12_diag_double_picnn_eigsig_notaken_2do_minmax_bugfix'
-rbf = 12
-lr = 1e-2
+expt_name = 'rbf12_bugfix2_largebatch_static'
+param = 'rbf'
+bfs = 12
+new_bfs = 12
+s_cutoff = 1
+
+lr = 1e-1
+lr_decay = False
+lr_cl = 1e-3
 ema_decay = 0.9
-xtra_feat = True #if  true, add extra features to model
-Takens = False
+xtra_feat = True  #if  true, add extra features to model
+xxtra = True
+Takens =False
+switch  = False
+random_init = False
+class_weighting = False
+weight_decay = 0
+max_epoch = 200
+wavelet_opt = 0
+epoch_samples = [k for k in [0, 24, 49, 75, 99, 124, 149, 174, 199, 224, 249] if k < max_epoch]
+#epoch_samples = [0, 9, 19, 29, 39, 49]
 
 
-rbfeps = 2/(rbf-3)
-centroids = torch.linspace(-rbfeps, 2 + rbfeps, rbf)
+
+if param == 'rbf':
+    bfseps = 2/(bfs-3)
+    centroids = torch.linspace(-bfseps, 2 + bfseps, bfs)
 
 
 ##### directories #####
@@ -45,10 +61,8 @@ graph_list = pickle.load(open(processed + dataset_name + 'networkx_graphs.pkl', 
 data_len = len(graph_list)
 
 ##### training parameters #####
-max_epoch = 200
-wavelet_opt = 50
-epoch_samples = [k for k in [0, 24, 49, 75, 99, 124, 149, 174, 199] if k < max_epoch]
-bs = {'DHFR/': 11, 'MUTAG/': 10, 'COX2/': 9, 'IMDB-BINARY/': 18, 'NCI1/': 20, 'IMDB-MULTI/': 27 }
+#bs = {'DHFR/': 11, 'MUTAG/': 10, 'COX2/': 9, 'IMDB-BINARY/': 18, 'NCI1/': 20, 'IMDB-MULTI/': 27 }
+bs = {'DHFR/': 59, 'MUTAG/': 57, 'COX2/': 47, 'IMDB-BINARY/': 50, 'NCI1/': 20, 'IMDB-MULTI/': 27 }
 
 batch_size = bs[dataset_name]
 test_size =  data_len // 10
@@ -64,11 +78,12 @@ if xtra_feat:
     sig_prep = iisignature.prepare(2, pslevel)
     #xtra_feat_length = iisignature.logsiglength(2, pslevel)
     siglength = iisignature.logsiglength(2, pslevel)
-    xtra_feat_length = siglength + 2
+
+    xtra_feat_length = siglength
+    if xxtra: xtra_feat_length += 4
+
 else:
     xtra_feat_length = 0
-
-print(xtra_feat_length)
 
 
 
@@ -76,13 +91,15 @@ print(xtra_feat_length)
 data = []
 label = []
 mx, mn = -np.inf, np.inf
-
+Alist = None
+Aker = None
+smax = []
 for i in range(len(graph_list)):
     G = graph_list[i]
     L = nx.normalized_laplacian_matrix(G)
     lam, v = eigh(L.todense())
     w = torch.from_numpy(lam).float()
-
+    diameter = nx.diameter(G)
     datum = dict()
     label.append(G.graph['label'])
 
@@ -96,41 +113,89 @@ for i in range(len(graph_list)):
             path[:,0] = lam
             path[:,1] = np.linspace(0, 2, len(lam))
         #datum['feats'] = torch.tensor(iisignature.logsig(path,sig_prep)).float()
-        feats = torch.zeros([xtra_feat_length])
-        feats[2:] = torch.tensor(iisignature.logsig(path,sig_prep)).float()
+
+        sigs = torch.tensor(iisignature.logsig(path,sig_prep)).float()
+        if xxtra:
+            feats = torch.zeros([xtra_feat_length])
+            feats[4:] = sigs
+        else:
+            datum['feats'] = sigs
 
     evecssq = torch.from_numpy(v**2).float()
-    gram = 1/torch.sqrt((torch.reshape(w, [len(G), 1]) - centroids)**2/rbfeps**2 + 1)
-    A = torch.matmul(evecssq, gram)
+    if param == 'rbf':
+        gram = 1/torch.sqrt((torch.reshape(w, [len(G), 1]) - centroids)**2/bfseps**2 + 1)
+        A = torch.matmul(evecssq, gram)
+        #A = A - torch.mean(A, dim = 0)
+
+    elif param == 'cheb':
+        vander=  torch.from_numpy(np.polynomial.chebyshev.chebvander(lam, bfs+1)).float()
+        A = torch.matmul(evecssq, vander[:, 2:])
+
 
     hks = torch.matmul(evecssq, torch.exp(-10*w)).flatten()
     hks_another = torch.matmul(evecssq, torch.exp(w)).flatten()
 
+    #hks = hks - torch.mean(hks)
+
     datum['f'] = hks
     datum['f_static'] =  hks_another
-    feats[0] = torch.min(hks_another)
-    feats[1] = torch.max(hks_another)
-    datum['feats'] = feats
-    datum['fminmax'] = torch.zeros(2)
+    if xxtra:
+        feats[0] = torch.min(hks_another)
+        feats[1] = torch.max(hks_another)
+        feats[2] = torch.min(hks)
+        feats[3] = torch.max(hks)
+        datum['feats'] = feats
+    #feats[4] = diameter
+
+    datum['diameter'] = diameter
+
+    #datum['fminmax'] = torch.zeros(2)
     st = simplex_tree_constructor([list(e) for e in G.edges()])
     datum['simplex_tree'] = filtration_update(st, hks.numpy())
     datum['images'] = torch.zeros([6, resolution, resolution])
     #recompute persistence
     pers = datum['simplex_tree'].persistence(homology_coeff_field = 2)
 
+    if diameter > 1:
+        mx = max(float(torch.max(hks_another)), mx)
+        mn = min(float(torch.min(hks_another)), mn)
+        #u_g, s_g, vh_g  = np.linalg.svd(A, full_matrices = False)
+        if type(Alist) == type(None):
+            Alist = A
+            hkslist = hks
+        else:
+            Alist = np.append(Alist, A, axis = 0)
+            hkslist = np.append(hkslist, hks)
 
-    mx = max(float(torch.max(hks_another)), mx)
-    mn = min(float(torch.min(hks_another)), mn)
+        #if type(Aker) == type(None):
+        #    ker = vh_g[s_g<s_cutoff*max(s_g), :]
+        #    Aker = vh_g[s_g > s_cutoff, :]
+        #else:
+            #Aker = np.append(Aker, vh_g[s_g<s_cutoff*max(s_g), :], axis = 0 )
+            #Aker = np.append(Aker, vh_g[s_g > s_cutoff, :], axis = 0 )
 
-    if i ==0:
-        Alist = A
-        hkslist = hks
-    else:
-        Alist = np.append(Alist, A, axis = 0)
-        hkslist = np.append(hkslist, hks)
     data.append(datum)
 
-print(mn,mx)
+#u_ker, s_ker, vh_ker  = np.linalg.svd(Aker, full_matrices = False)
+
+#plt.plot(s_ker, '.-')
+#plt.show()
+
+#t = torch.linspace(0, 2, 50)
+#if param == 'rbf':
+#    gram = 1/torch.sqrt((torch.reshape(t, [-1, 1]) - centroids)**2/bfseps**2 + 1)
+#    for i in range(4):
+#        plt.plot(t, torch.matmul(gram, torch.reshape(torch.from_numpy(vh_ker[i]), [-1, 1]) ), label = str(i))
+#    plt.legend()
+#    plt.xlabel('eigenvalues')
+#    plt.savefig('imdb_b_rbf102_shared_wavelet.pdf', dpi = 300)
+#elif param == 'cheb':
+#    vander=  torch.from_numpy(np.polynomial.chebyshev.chebvander(t, bfs+1)).float()[:, 2:]
+    #for i in range(new_bfs):
+        #plt.plot(t, torch.matmul(vander, torch.reshape(torch.from_numpy(vh_ker[i]), [-1, 1]) ))
+    #plt.show()
+
+#del Aker
 
 genphandpi = GenPHandPI(resolution, lims = [mn, mx], filtername = 'f_static' )
 PIs_static = genphandpi(data)
@@ -140,40 +205,49 @@ for i in range(len(graph_list)):
     dat = data[i]
     dat['images'][3:, :,:] = PIs_static[i]
 
+#Alist = np.matmul(Alist, vh_ker[0:new_bfs,:].T)
 u, s, vh  = np.linalg.svd(Alist, full_matrices = False)
+
 del Alist
 gc.collect()
+print('u shape, ', u.shape)
+print('s ', s)
 
-winit = np.matmul(u.T, hkslist)
-reconstruct_delta = np.abs(np.matmul(u, winit)- hkslist)
-error_max = np.argmax(reconstruct_delta)
-#print(winit, winit.shape)
-#print(reconstruct_delta[error_max], hkslist[error_max])
-
-winit = torch.tensor(winit).float()
-coeffs = winit
 torch.set_rng_state(rng_state)
 torch.manual_seed(0)
 
+
+if random_init:
+    winit = torch.empty(new_bfs, 1).normal_(mean = 0, std = 1/np.sqrt(new_bfs))
+else:
+    winit = np.matmul(u.T, hkslist)
+    reconstruct_delta = np.abs(np.matmul(u, winit)- hkslist)
+    error_max = np.argmax(reconstruct_delta)
+    #print(winit, winit.shape)
+    print('max error', reconstruct_delta[error_max], hkslist[error_max])
+    winit = torch.tensor(winit).float()
 
 mx, mn = -np.inf, np.inf
 cnter = 0
 for i in range(len(graph_list)):
     dat = data[i]
-    G = graph_list[i]
-    dat['secondary_gram'] = torch.from_numpy(u[cnter:cnter + len(G),:])
-    cnter+= len(G)
-    hks = torch.flatten(torch.matmul(dat['secondary_gram'], winit)).float().detach()
-    mx = max(float(torch.max(hks)), mx)
-    mn = min(float(torch.min(hks)), mn)
+    if dat['diameter'] > 1:
+        G = graph_list[i]
+        dat['secondary_gram'] = torch.from_numpy(u[cnter:cnter + len(G),:])
+        cnter+= len(G)
+        hks = torch.flatten(torch.matmul(dat['secondary_gram'], winit)).float().detach()
 
+        mx = max(float(torch.max(hks)), mx)
+        mn = min(float(torch.min(hks)), mn)
+
+print('min, max', mn,  mx)
 del u, s, vh, PIs_static
 
 gc.collect()
 
 
 #if fix wavelet
-#eval_model = ModelPIRBFDoubleOneStatic(rbf = rbf, resolution = resolution, lims = [mn, mx], weightinit = winit, extra_feat_len = xtra_feat_length)
+#eval_model = ModelPIRBFDoubleOneStatic(bfs = bfs, resolution = resolution, lims = [mn, mx], weightinit = winit, extra_feat_len = xtra_feat_length)
 #eval_model.update = True #write PIs to dat['images']
 #outcrap = eval_model(data)
 
@@ -181,7 +255,7 @@ label = torch.tensor(label).float()
 print('Finished initial processing')
 del graph_list
 gc.collect()
-print(mn,  mx)
+
 torch.set_rng_state(rng_state) #fix init state
 shuffidx = list(range(data_len)) # data indexer
 criterion = nn.BCEWithLogitsLoss() #loss function
@@ -199,24 +273,28 @@ for run in range(10):
         test_top = (1+fold) * test_size
         test_indices = shuffidx[test_bottom : test_top]
         train_indices = shuffidx[0:test_bottom] + shuffidx[test_top :]
-
+        numones = sum(label[train_indices])
+        pos_weight = (len(train_indices) - numones)/numones
 
         train_acc = []
         loss_func = []
-        rbf_params = []
-        rbf_grad = []
+        bfs_params = []
+        bfs_grad = []
         test_acc = []
 
         torch.set_rng_state(rng_state) #fix init state
         torch.manual_seed(0)
-        pht = ModelPIRBFDoubleOneStatic(rbf = rbf, resolution = resolution, lims = [mn, mx], weightinit = winit, extra_feat_len = xtra_feat_length)
-        #pht = ModelPIRBFDoubleOneStatic(rbf = rbf, resolution = resolution, lims = [mn, mx])
+        pht = ModelPIRBFDoubleOneStatic(rbf = new_bfs, resolution = resolution, lims = [mn, mx], weightinit = winit, extra_feat_len = xtra_feat_length)
+
+        #pht = ModelPIRBFDoubleOneStatic(bfs = bfs, resolution = resolution, lims = [mn, mx])
         #if run==0 and fold == 0: print(pht.rbfweights)
 
 
         torch.set_rng_state(rng_state)
         torch.manual_seed(0)
-        eval_model = ModelPIRBFDoubleOneStatic(rbf = rbf, resolution = resolution, lims = [mn, mx], weightinit = winit, extra_feat_len = xtra_feat_length)
+
+        eval_model = ModelPIRBFDoubleOneStatic(rbf = new_bfs, resolution = resolution, lims = [mn, mx], weightinit = winit, extra_feat_len = xtra_feat_length)
+
         eval_model.update = True
         outcrap = eval_model(data)
         del outcrap
@@ -239,10 +317,17 @@ for run in range(10):
         ema = EMA(ema_decay)
         ema.register(pht.state_dict(keep_vars = False))
 
-        criterion = nn.BCEWithLogitsLoss() #loss function
+        if class_weighting:
+            criterion = nn.BCEWithLogitsLoss(pos_weight = pos_weight) #loss function
+        else:
+            criterion = nn.BCEWithLogitsLoss() #loss function
 
-        optimizer_classifier = optim.Adam([{'params': [param for name, param in pht.named_parameters() if 'rbfweights' not in name]}], lr=1e-3, weight_decay = 0.0)
-        optimizer_filter = optim.SGD([{'params': pht.rbfweights}], lr=lr)
+        optimizer_classifier = optim.Adam([{'params': [param for name, param in pht.named_parameters() if 'rbfweights' not in name]}], lr=lr_cl, weight_decay = 0)
+        optimizer_filter = optim.SGD([{'params': pht.rbfweights}], lr=lr, weight_decay = weight_decay)
+
+        if lr_decay :
+            lambda1 = lambda epoch: 0.95 ** epoch
+            scheduler = optim.lr_scheduler.LambdaLR(optimizer_filter, lr_lambda= lambda1)
 
         for epoch in range(max_epoch):
             pht.train()
@@ -274,12 +359,13 @@ for run in range(10):
                 optimizer_filter.zero_grad()
 
                 outputs = pht([data[i] for i in train_indices_batch])
+
                 loss = criterion(outputs, mod_labels.unsqueeze(-1))
                 loss.backward()
 
                 if epoch < wavelet_opt:
-                    optimizer_classifier.step()
                     optimizer_filter.step()
+                    if not switch: optimizer_classifier.step()
                 else:
                     optimizer_classifier.step()
 
@@ -293,10 +379,10 @@ for run in range(10):
                 #train_acc.append(int(((outputs.view(-1) > 0) == label[train_indices_batch]).sum())/len(train_indices_batch))
                 #loss_func.append(float(loss))
 
-            eval_model.load_state_dict(ema.shadow)
-            eval_model.eval()
+
+            if lr_decay: scheduler.step()
             if epoch < wavelet_opt:
-                rbf_params.append(eval_model.rbfweights.detach().clone().numpy())
+                bfs_params.append(pht.rbfweights.detach().clone().numpy())
 
             train_acc.append(tna/len(train_indices))
             loss_func.append(lss/len(train_indices))
@@ -316,9 +402,13 @@ for run in range(10):
         pickle.dump(train_acc, open(result_dump + 'train_acc_'+ run_fold_index + '.pkl', 'wb'))
         pickle.dump(test_acc, open(result_dump + 'test_acc_' + run_fold_index + '.pkl', 'wb'))
         pickle.dump(loss_func, open(result_dump + 'loss_' + run_fold_index+'.pkl', 'wb'))
-        #pickle.dump(rbf_grad, open(result_dump + 'dtheta_'+ run_fold_index+'.pkl', 'wb'))
-        pickle.dump(rbf_params, open(result_dump + 'theta_' + run_fold_index+ '.pkl', 'wb'))
+        #pickle.dump(bfs_grad, open(result_dump + 'dtheta_'+ run_fold_index+'.pkl', 'wb'))
+        pickle.dump(bfs_params, open(result_dump + 'theta_' + run_fold_index+ '.pkl', 'wb'))
         #print(max(train_acc), train_acc[-1], max(test_acc), test_acc[-1])
 
-        del rbf_params, train_acc, test_acc, loss_func, eval_model, pht
+        del bfs_params, train_acc, test_acc, loss_func, eval_model, pht
+
+        if lr_decay:
+            del scheduler
+
         gc.collect()
