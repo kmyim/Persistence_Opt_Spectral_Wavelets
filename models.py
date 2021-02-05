@@ -580,13 +580,16 @@ class ModelPIRBFDouble(nn.Module):
 
             PI_dynamic1 = self.PHPI1(mb)
             PI_dynamic2 = self.PHPI2(mb)
+
             PIs = torch.cat([PI_dynamic1, PI_dynamic2], dim = 1)
+
             #PIs = torch.cat([PI_dynamic1, PI_dynamic2, PI_static], dim = 1)
             if self.update :
+                print('update')
                 for i in range(L):
                     if mb[i]['diameter'] > 1:
-                        mb[i]['images'] = PIs[i].detach().clone().unsqueeze(0)
-
+                        mb[i]['images'][0:3] = PI_dynamic1[i].detach().clone().unsqueeze(0)
+                        mb[i]['images'][3:6] = PI_dynamic2[i].detach().clone().unsqueeze(0)
         PIs = self.CNN(PIs)
         features = torch.reshape(PIs, [L, -1])
 

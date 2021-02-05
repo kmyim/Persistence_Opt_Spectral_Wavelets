@@ -37,7 +37,7 @@ random_init = False
 class_weighting = False
 weight_decay = 0
 max_epoch = 200
-wavelet_opt = 50
+wavelet_opt = 1
 epoch_samples = [k for k in [0, 24, 49, 75, 99, 124, 149, 174, 199, 224, 249] if k < max_epoch]
 #epoch_samples = [0, 9, 19, 29, 39, 49]
 
@@ -309,6 +309,7 @@ for run in range(10):
             scheduler = optim.lr_scheduler.LambdaLR(optimizer_filter, lr_lambda= lambda1)
 
         for epoch in range(max_epoch):
+            
             pht.train()
             np.random.shuffle(train_indices)
 
@@ -317,6 +318,7 @@ for run in range(10):
 
                 pht.freeze_persistence = False
                 pht.update = True
+
                 outputs = pht(data) #with update  = true, computes and stores all images
                 pht.freeze_persistence = True
 
@@ -369,6 +371,7 @@ for run in range(10):
             if epoch in epoch_samples:
                 eval_model.load_state_dict(ema.shadow)
                 eval_model.eval()
+
                 pht.eval()
                 #test_outputs = pht([data[i] for i in test_indices])
 
@@ -376,7 +379,7 @@ for run in range(10):
                 test_acc.append(int(((test_outputs.view(-1) > 0) == label[test_indices]).sum())/len(test_indices))
 
 
-
+        print('end of one go')
         run_fold_index = str(run) + '_' + str(fold)
         pickle.dump(train_acc, open(result_dump + 'train_acc_'+ run_fold_index + '.pkl', 'wb'))
         pickle.dump(test_acc, open(result_dump + 'test_acc_' + run_fold_index + '.pkl', 'wb'))
