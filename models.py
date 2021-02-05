@@ -359,12 +359,14 @@ class ModelPIRBFDoubleOneStatic(nn.Module):
         self.resolution = resolution
         self.filtername = 'f'
         self.PHPI = GenPHandPI(self.resolution, self.lims, self.max_num_intervals, self.filtername)
-        channels = [6,20,2]
+        #channels = [6,20,2]
+        channels = [6, 16, 2]
         kernel = [2,2]
         stride = [1,1]
         padding = [1,1]
         groups = [2,2]
-        dropout = True
+        #dropout = True
+        dropout = False 
         #self.CNN= nn.Sequential(nn.BatchNorm2d(3), nn.Conv2d(in_channels = 3,out_channels = 15, kernel_size = 2, stride = 1), nn.ReLU(), nn.BatchNorm2d(15), nn.Conv2d(in_channels = 15,out_channels = 1, kernel_size = 2, stride = 1), nn.ReLU(), nn.Dropout2d(0.6))
         #self.CNN= nn.Sequential(nn.BatchNorm2d(6), nn.Conv2d(in_channels = 6,out_channels = 16, kernel_size = 2, stride = 1, groups = 2), nn.ReLU(), nn.BatchNorm2d(16), nn.Conv2d(in_channels = 16,out_channels = 2, kernel_size = 2, stride = 1), nn.ReLU())
         #self.CNN= nn.Sequential(nn.BatchNorm2d(conv_filters[0]), nn.Conv2d(in_channels = conv_filters[0],out_channels = conv_filters[1], kernel_size = kern_size[0], stride = stride[0], groups = 2), nn.ReLU(), nn.BatchNorm2d(conv_filters[1]), nn.Conv2d(in_channels = conv_filters[1],out_channels = conv_filters[2], kernel_size = kern_size[1], stride = stride[1], groups = 2), nn.ReLU(),  nn.BatchNorm2d(conv_filters[2]))
@@ -585,7 +587,7 @@ class ModelPIRBFDouble(nn.Module):
 
             #PIs = torch.cat([PI_dynamic1, PI_dynamic2, PI_static], dim = 1)
             if self.update :
-                print('update')
+
                 for i in range(L):
                     if mb[i]['diameter'] > 1:
                         mb[i]['images'][0:3] = PI_dynamic1[i].detach().clone().unsqueeze(0)
