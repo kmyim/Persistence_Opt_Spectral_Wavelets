@@ -19,7 +19,7 @@ gc.collect()
 #torch.set_num_threads(4)
 # persistence image
 resolution = 20 # res x res image
-expt_name = 'rbf12_bugfix2_double_opt'
+expt_name = 'rbf12_bugfix2_double_op_og'
 param = 'rbf'
 bfs = 12
 new_bfs = 12
@@ -61,7 +61,7 @@ graph_list = pickle.load(open(processed + dataset_name + 'networkx_graphs.pkl', 
 data_len = len(graph_list)
 
 ##### training parameters #####
-bs = {'DHFR/': 11, 'MUTAG/': 10, 'COX2/': 9, 'IMDB-BINARY/': 18, 'NCI1/': 20, 'IMDB-MULTI/': 27 }
+bs = {'DHFR/': 12, 'MUTAG/': 10, 'COX2/': 9, 'IMDB-BINARY/': 18, 'NCI1/': 20, 'IMDB-MULTI/': 27 }
 #bs = {'DHFR/': 59, 'MUTAG/': 57, 'COX2/': 47, 'IMDB-BINARY/': 50, 'NCI1/': 20, 'IMDB-MULTI/': 27 }
 
 batch_size = bs[dataset_name]

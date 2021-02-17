@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 from playground import *
 import os
 
-dataset_name = 'IMDB-MULTI'
+dataset_name = 'PROTEINS'
 raw = 'data_example/raw/'
 processed = 'data_example/'
 

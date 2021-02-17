@@ -16,7 +16,7 @@ def simplex_tree_constructor0dim(G):
     for e in G:
         st.insert(e, 1.0)
     st.initialize_filtration()
-    st.persistence(homology_coeff_field = 2, persistence_dim_max = True)
+    st.persistence(homology_coeff_field = 2)
     bs = st.betti_numbers()
     if len(bs) >= 2:
         b1 = bs[1]
@@ -53,7 +53,17 @@ def simplex_tree_constructor(G, flag=False):
     else:
         return st
 
+def simplex_tree_constructor_ord(G):
+    '''
+    G a graph, list of edges [v,w]
+    output gudhi simplex tree object
+    '''
 
+    st = gudhi.SimplexTree()
+
+    for e in G:
+        st.insert(e, 0.0)
+    return st
 
 def filtration_update(st, f):
 
@@ -78,6 +88,19 @@ def filtration_update(st, f):
 
     for s in st.get_cofaces([1000], codimension = 2):
         if len(s[0]) == 3: st.assign_filtration(simplex = s[0], filtration = 1000 - min(f[v] for v in s[0] if v != 1000))
+
+    st.initialize_filtration()
+    st.make_filtration_non_decreasing()
+
+    return st
+
+def filtration_update_ord(st, f):
+
+    for s in st.get_skeleton(1):
+        if len(s[0]) == 1:
+            st.assign_filtration(simplex = s[0], filtration = f[s[0]])
+        if len(s[0]) == 2:
+            st.assign_filtration(simplex = s[0], filtration = max(f[v] for v in s[0]))
 
     st.initialize_filtration()
     st.make_filtration_non_decreasing()

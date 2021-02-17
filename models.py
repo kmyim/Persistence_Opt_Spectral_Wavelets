@@ -359,14 +359,12 @@ class ModelPIRBFDoubleOneStatic(nn.Module):
         self.resolution = resolution
         self.filtername = 'f'
         self.PHPI = GenPHandPI(self.resolution, self.lims, self.max_num_intervals, self.filtername)
-        #channels = [6,20,2]
-        channels = [6, 16, 2]
+        channels = [6,20,2]
         kernel = [2,2]
         stride = [1,1]
         padding = [1,1]
         groups = [2,2]
-        #dropout = True
-        dropout = False 
+        dropout = True
         #self.CNN= nn.Sequential(nn.BatchNorm2d(3), nn.Conv2d(in_channels = 3,out_channels = 15, kernel_size = 2, stride = 1), nn.ReLU(), nn.BatchNorm2d(15), nn.Conv2d(in_channels = 15,out_channels = 1, kernel_size = 2, stride = 1), nn.ReLU(), nn.Dropout2d(0.6))
         #self.CNN= nn.Sequential(nn.BatchNorm2d(6), nn.Conv2d(in_channels = 6,out_channels = 16, kernel_size = 2, stride = 1, groups = 2), nn.ReLU(), nn.BatchNorm2d(16), nn.Conv2d(in_channels = 16,out_channels = 2, kernel_size = 2, stride = 1), nn.ReLU())
         #self.CNN= nn.Sequential(nn.BatchNorm2d(conv_filters[0]), nn.Conv2d(in_channels = conv_filters[0],out_channels = conv_filters[1], kernel_size = kern_size[0], stride = stride[0], groups = 2), nn.ReLU(), nn.BatchNorm2d(conv_filters[1]), nn.Conv2d(in_channels = conv_filters[1],out_channels = conv_filters[2], kernel_size = kern_size[1], stride = stride[1], groups = 2), nn.ReLU(),  nn.BatchNorm2d(conv_filters[2]))
@@ -523,7 +521,7 @@ class ModelPIRBFDouble(nn.Module):
         super(ModelPIRBFDouble, self).__init__()
 
         if type(weightinit) == type(None):
-            self.rbfweights = nn.Parameter(torch.empty(rbf, 1).normal_(mean = 0, std = 1/np.sqrt(rbf)), requires_grad = True)
+            self.rbfweights = nn.Parameter(torch.empty(rbf, 2).normal_(mean = 0, std = 1/np.sqrt(rbf)), requires_grad = True)
         else:
             self.rbfweights = nn.Parameter(torch.reshape(weightinit.detach().clone(), [rbf, 2]), requires_grad = True)
         self.resolution = resolution
@@ -601,3 +599,67 @@ class ModelPIRBFDouble(nn.Module):
             features = torch.cat((features, feats), dim = 1)
 
         return self.project(features)
+
+
+
+
+
+def max_pers(datum, filtername = 'f'):
+
+    f = datum[filtername]
+
+    birthv = [[],[]]
+    deathv = [[],[]]
+    #recompute persistence
+    datum['simplex_tree'] = filtration_update_ord(datum['simplex_tree'], f.detach().numpy())
+    pers = datum['simplex_tree'].persistence(homology_coeff_field = 2)
+    pairs =  datum['simplex_tree'].persistence_pairs()
+
+    for interval in pairs:
+        if len(interval[0]) == 1 and len(interval[1]) > 0: #H0
+            bv = interval[0][0]
+            dv = max([v for v in interval[1]], key = lambda v: f[v])
+            birthv[0].append(bv)
+            deathv[0].append(dv)
+
+    datum['simplex_tree'] = filtration_update_ord(datum['simplex_tree'], -f.detach().numpy())
+    pers = datum['simplex_tree'].persistence(homology_coeff_field = 2)
+    pairs =  datum['simplex_tree'].persistence_pairs()
+
+    for interval in pairs:
+        if len(interval[0]) == 1 and len(interval[1]) > 0: #H0
+            bv = interval[0][0]
+            dv = max([v for v in interval[1]], key = lambda v: f[v])
+            birthv[1].append(bv)
+            deathv[1].append(dv)
+
+    return birthv, deathv
+
+
+class MP(nn.Module):
+
+    def __init__(self, rbf = 12, filtername = 'f', weightinit = None  ):
+
+        super(MP, self).__init__()
+
+        weightinit = weightinit
+
+        if type(weightinit) == type(None):
+            self.rbfweights = nn.Parameter(torch.empty(rbf, 1).normal_(mean = 0, std = 1/np.sqrt(rbf)), requires_grad = True)
+        else:
+            self.rbfweights = nn.Parameter(torch.reshape(weightinit.detach().clone(), [rbf, 1]), requires_grad = True)
+
+        self.filtername = filtername
+
+    def forward(self, mb):
+        L = len(mb)
+        loss = torch.tensor(0.0).float()
+
+        for i in range(L):
+            if mb[i]['diameter'] > 1:
+                f = torch.matmul(mb[i]['secondary_gram'], self.rbfweights).flatten()/torch.norm(self.rbfweights)
+                mb[i][self.filtername] = f
+                bv, dv = max_pers(mb[i], self.filtername)
+                for k in range(2):
+                    loss += torch.sum((f[dv[k]] - f[bv[k]])**2)
+        return -loss

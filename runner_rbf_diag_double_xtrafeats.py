@@ -12,6 +12,7 @@ from playground import *
 from models import ModelPIRBFDoubleOneStatic, EMA, GenPHandPI
 import matplotlib.pyplot as plt
 import iisignature
+from collections import Counter
 
 
 ##### neural net parameters #####
@@ -19,19 +20,19 @@ gc.collect()
 #torch.set_num_threads(4)
 # persistence image
 resolution = 20 # res x res image
-expt_name = 'rbf12_bugfix2_largebatch_static'
+expt_name = 'rbf12_bugfix2_nofeats_static'
 param = 'rbf'
 bfs = 12
 new_bfs = 12
-s_cutoff = 1
+s_cutoff = 0
 
-lr = 1e-1
+lr = 1e-2
 lr_decay = False
 lr_cl = 1e-3
 ema_decay = 0.9
-xtra_feat = True  #if  true, add extra features to model
-xxtra = True
-Takens =False
+xtra_feat = False  #if  true, add extra features to model
+xxtra = False
+Takens = True
 switch  = False
 random_init = False
 class_weighting = False
@@ -49,7 +50,7 @@ if param == 'rbf':
 
 
 ##### directories #####
-dataset_name = 'IMDB-BINARY/'
+dataset_name = 'MUTAG/'
 raw = 'raw_datasets/'
 processed = 'data_example/'
 result_dump = 'ten10folds/' + dataset_name + expt_name + '/' + expt_name + '_'
@@ -61,8 +62,8 @@ graph_list = pickle.load(open(processed + dataset_name + 'networkx_graphs.pkl', 
 data_len = len(graph_list)
 
 ##### training parameters #####
-#bs = {'DHFR/': 11, 'MUTAG/': 10, 'COX2/': 9, 'IMDB-BINARY/': 18, 'NCI1/': 20, 'IMDB-MULTI/': 27 }
-bs = {'DHFR/': 59, 'MUTAG/': 57, 'COX2/': 47, 'IMDB-BINARY/': 50, 'NCI1/': 20, 'IMDB-MULTI/': 27 }
+bs = {'DHFR/': 11, 'MUTAG/': 10, 'COX2/': 9, 'IMDB-BINARY/': 18, 'NCI1/': 20, 'IMDB-MULTI/': 27 }
+#bs = {'DHFR/': 59, 'MUTAG/': 57, 'COX2/': 47, 'IMDB-BINARY/': 50, 'NCI1/': 20, 'IMDB-MULTI/': 27, 'PROTEINS/': 59 }
 
 batch_size = bs[dataset_name]
 test_size =  data_len // 10
@@ -99,9 +100,14 @@ for i in range(len(graph_list)):
     L = nx.normalized_laplacian_matrix(G)
     lam, v = eigh(L.todense())
     w = torch.from_numpy(lam).float()
-    diameter = nx.diameter(G)
+
+    if len(G)*(len(G)-1) > 2*G.number_of_edges():
+        diameter = 2
+    else:
+        diameter = 0
+
     datum = dict()
-    label.append(G.graph['label'])
+    label.append(G.graph['label'] % 2)
 
     if xtra_feat:
         if Takens:
@@ -139,7 +145,7 @@ for i in range(len(graph_list)):
 
     datum['f'] = hks
     datum['f_static'] =  hks_another
-    if xxtra:
+    if xxtra and xtra_feat:
         feats[0] = torch.min(hks_another)
         feats[1] = torch.max(hks_another)
         feats[2] = torch.min(hks)
@@ -175,6 +181,7 @@ for i in range(len(graph_list)):
             #Aker = np.append(Aker, vh_g[s_g > s_cutoff, :], axis = 0 )
 
     data.append(datum)
+print(Counter(label))
 
 #u_ker, s_ker, vh_ker  = np.linalg.svd(Aker, full_matrices = False)
 
@@ -207,11 +214,14 @@ for i in range(len(graph_list)):
 
 #Alist = np.matmul(Alist, vh_ker[0:new_bfs,:].T)
 u, s, vh  = np.linalg.svd(Alist, full_matrices = False)
-
 del Alist
 gc.collect()
 print('u shape, ', u.shape)
 print('s ', s)
+
+u = u[:, s > s_cutoff]
+vh = vh[s > s_cutoff, :]
+new_bfs = sum(s> s_cutoff)
 
 torch.set_rng_state(rng_state)
 torch.manual_seed(0)
@@ -265,6 +275,7 @@ for run in range(10):
     print('run = ', run)
     np.random.seed(run)
     np.random.shuffle(shuffidx) # randomly choose partition of data into test / fold
+
 
     for fold in range(10):
         print ('> fold ', fold)
